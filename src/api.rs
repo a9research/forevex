@@ -39,20 +39,24 @@ pub fn router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let v1 = Router::new()
-        .route("/meta", get(meta))
-        .route("/users", post(create_user))
-        .route("/users/:proxy", get(get_user))
-        .route("/users/:proxy/positions", get(list_positions))
-        .route("/users/:proxy/positions/sync", post(sync_positions_path))
-        .route(
-            "/users/:proxy/activity",
-            get(get_activity).post(sync_activity_body),
-        );
-
+    // 使用完整路径注册，避免 `nest` 与反代 strip 前缀时难以对照；路径与表头文档一致。
     Router::new()
         .route("/health", get(health))
-        .nest("/api/v1", v1)
+        .route("/api/v1/meta", get(meta))
+        .route("/api/v1/users", post(create_user))
+        .route("/api/v1/users/:proxy", get(get_user))
+        .route(
+            "/api/v1/users/:proxy/positions",
+            get(list_positions),
+        )
+        .route(
+            "/api/v1/users/:proxy/positions/sync",
+            post(sync_positions_path),
+        )
+        .route(
+            "/api/v1/users/:proxy/activity",
+            get(get_activity).post(sync_activity_body),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)

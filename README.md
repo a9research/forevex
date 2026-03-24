@@ -92,6 +92,21 @@ forevex sync activity 0x… --market <condition_id>
 
 前端建议：**只连 forevex** 时**不要设置** **`NEXT_PUBLIC_API_BASE_URL`**（则不请求 `GET /analyze`），并配置 **`NEXT_PUBLIC_FOREVEX_URL`** 或 **`NEXT_PUBLIC_FOREVEX_USE_PROXY` + `FOREVEX_UPSTREAM_URL`**。若与分析器并行部署，再设置 **`NEXT_PUBLIC_API_BASE_URL`** 指向分析器；**`NEXT_PUBLIC_SKIP_ANALYZE=1`** 在已配基址时仅跳过拉报告。把 API 基址误指到 forevex 会得到 **`GET /analyze` 404**。
 
+### 部署后仍见 `POST /api/v1/users` → 404？
+
+**最常见原因：公网 `:3000` 上跑的不是 forevex，而是 polymarket-account-analyzer**（两者 compose 默认都映射 `3000`）。分析器没有 `/api/v1/...`，故统一 **404**。
+
+在**服务器本机**执行（把 `127.0.0.1` 换成你实际监听地址）：
+
+```bash
+curl -sS http://127.0.0.1:3000/health
+```
+
+- **forevex**：响应为 **JSON**，形如 `{"ok":true,"service":"forevex"}`；且 `curl -sS http://127.0.0.1:3000/api/v1/meta` 应返回带 `apiVersion` 的 JSON。
+- **polymarket-account-analyzer**：`/health` 为纯文本 **`ok`**（无 JSON）；无 `/api/v1/meta`。
+
+处理：二选一占用 `3000`，或把 forevex 改绑 **`3001`**（改 `FOREVEX_BIND` + compose `ports` + 前端 `NEXT_PUBLIC_FOREVEX_URL`）。更新镜像后建议 **`docker compose build --no-cache`** 再 **`up -d`**，避免旧层缓存。
+
 ## 存储：`jsonb` vs 强类型列
 
 当前实现以 **`jsonb` + 少量键列**（`proxy`、`state`、`position_key`、`market`）为主。
