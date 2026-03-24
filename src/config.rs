@@ -22,7 +22,7 @@ impl Config {
             .or_else(|_| std::env::var("FOREVEX_DATABASE_URL"))
             .context("DATABASE_URL or FOREVEX_DATABASE_URL must be set")?;
         let public_base_url = std::env::var("FOREVEX_PUBLIC_BASE_URL").ok().filter(|s| !s.is_empty());
-        let bind = std::env::var("FOREVEX_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        let bind = std::env::var("FOREVEX_BIND").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
         let gamma_origin = std::env::var("FOREVEX_GAMMA_ORIGIN")
             .unwrap_or_else(|_| "https://gamma-api.polymarket.com".to_string())
             .trim_end_matches('/')

@@ -1,6 +1,6 @@
 # forevex
 
-独立 Rust 服务：从 Polymarket 官方 HTTP API 拉取**用户资料 / 指标 / 持仓 / 市场 activity**，写入 **PostgreSQL**，并提供 **CLI** 与 **HTTP API**。与仓库 [`account-analyzer`](../account-analyzer) 平级，**单独 git 仓库**。
+独立 Rust 服务：从 Polymarket 官方 HTTP API 拉取**用户资料 / 指标 / 持仓 / 市场 activity**，写入 **PostgreSQL**，并提供 **CLI** 与 **HTTP API**。位于本仓库子目录 **`account-analyzer/forevex/`**（相对 monorepo 根：`Forevex/account-analyzer/forevex`），**保留独立 `.git`**（嵌套仓库）。
 
 > 上游为非保证稳定的公开接口；字段以实时 JSON 为准。Rust 官方客户端见 [Polymarket Clients & SDKs](https://docs.polymarket.com/api-reference/clients-sdks)。
 
@@ -17,14 +17,14 @@ cargo run -- serve
 另一终端：
 
 ```bash
-curl -s http://127.0.0.1:8080/health
-curl -s -X POST http://127.0.0.1:8080/v1/users/sync -H 'content-type: application/json' \
+curl -s http://127.0.0.1:3000/health
+curl -s -X POST http://127.0.0.1:3000/v1/users/sync -H 'content-type: application/json' \
   -d '{"input":"@YatSen"}'   # 或 0x… 地址
-curl -s http://127.0.0.1:8080/v1/users/0x你的proxy
-curl -s -X POST http://127.0.0.1:8080/v1/wallets/0x…/positions/sync
-curl -s 'http://127.0.0.1:8080/v1/wallets/0x…/positions?state=open'
-curl -s -X POST 'http://127.0.0.1:8080/v1/wallets/0x…/activity?market=条件ID'
-curl -s 'http://127.0.0.1:8080/v1/wallets/0x…/activity?market=条件ID'
+curl -s http://127.0.0.1:3000/v1/users/0x你的proxy
+curl -s -X POST http://127.0.0.1:3000/v1/wallets/0x…/positions/sync
+curl -s 'http://127.0.0.1:3000/v1/wallets/0x…/positions?state=open'
+curl -s -X POST 'http://127.0.0.1:3000/v1/wallets/0x…/activity?market=条件ID'
+curl -s 'http://127.0.0.1:3000/v1/wallets/0x…/activity?market=条件ID'
 ```
 
 全栈 Compose（含 `forevex` 镜像）：
@@ -33,7 +33,7 @@ curl -s 'http://127.0.0.1:8080/v1/wallets/0x…/activity?market=条件ID'
 docker compose up --build
 ```
 
-默认映射：**Postgres `5433`**（避免与本机其他 PG 冲突）、**API `8088`**。
+默认映射：**Postgres `5433`**（避免与本机其他 PG 冲突）、**API `3000`**。
 
 ## CLI
 
@@ -50,7 +50,7 @@ forevex sync activity 0x… --market <condition_id>
 | 变量 | 说明 |
 |------|------|
 | `DATABASE_URL` / `FOREVEX_DATABASE_URL` | Postgres 连接串 |
-| `FOREVEX_BIND` | 监听地址，默认 `0.0.0.0:8080` |
+| `FOREVEX_BIND` | 监听地址，默认 `0.0.0.0:3000` |
 | `FOREVEX_PUBLIC_BASE_URL` | 对外域名/基址（元信息、文档用） |
 | `FOREVEX_*_ORIGIN` / `FOREVEX_USER_STATS_URL` / `FOREVEX_USER_PNL_URL` | 上游 base |
 

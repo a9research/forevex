@@ -11,6 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY --from=builder /app/target/release/forevex /usr/local/bin/forevex
 ENV RUST_LOG=info
-EXPOSE 8080
+EXPOSE 3000
 ENTRYPOINT ["forevex"]
 CMD ["serve"]
