@@ -5,7 +5,7 @@
 //! | `GET` | `/health` | — | Liveness |
 //! | `GET` | `/api/v1/meta` | — | Service metadata |
 //! | `POST` | `/api/v1/users` | `{ "input": "@slug" \| "0x…" }` | Resolve + sync upstream → DB, **201 Created** |
-//! | `GET` | `/api/v1/users/:proxy` | — | Wallet snapshot JSON |
+//! | `GET` | `/api/v1/users/:proxy` | — | Wallet snapshot JSON（含 **`positionsSyncedAt`**：曾完成持仓 sync 则有值，否则 `null` → 客户端应先 blocking sync） |
 //! | `GET` | `/api/v1/users/:proxy/positions` | `?state=open\|closed` | List cached positions |
 //! | `POST` | `/api/v1/users/:proxy/positions/sync` | — | Refresh positions from Data API |
 //! | `GET` | `/api/v1/users/:proxy/activity` | `?market=<condition_id>` | Cached activity |
@@ -117,6 +117,7 @@ async fn get_user(
         "userPnl": row.user_pnl.map(|j| j.0),
         "profileFetchedAt": row.profile_fetched_at,
         "metricsFetchedAt": row.metrics_fetched_at,
+        "positionsSyncedAt": row.positions_synced_at,
     })))
 }
 

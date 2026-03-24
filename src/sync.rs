@@ -189,6 +189,7 @@ pub async fn sync_positions(store: &Store, up: &Upstream, proxy: &str) -> anyhow
 
     store.replace_positions(&p, "open", &open_rows).await?;
     store.replace_positions(&p, "closed", &closed_rows).await?;
+    store.set_positions_synced_at(&p).await?;
 
     Ok(json!({
         "proxy": p,

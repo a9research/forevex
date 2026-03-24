@@ -38,7 +38,7 @@ curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/activity?market=<condition_id>
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/api/v1/meta` | 元信息 |
 | `POST` | `/api/v1/users` | Body: `{"input":"@slug或0x…"}`，上游拉取并写入 DB → **201** |
-| `GET` | `/api/v1/users/{proxy}` | 用户快照 JSON |
+| `GET` | `/api/v1/users/{proxy}` | 用户快照 JSON（含 **`positionsSyncedAt`**：至少成功做过一次 `POST …/positions/sync` 后有 ISO 时间，否则 `null`） |
 | `GET` | `/api/v1/users/{proxy}/positions` | Query: `state=open` / `closed` |
 | `POST` | `/api/v1/users/{proxy}/positions/sync` | 从 Data API 刷新持仓 |
 | `GET` | `/api/v1/users/{proxy}/activity` | Query: `market=<condition_id>`，读缓存 |
@@ -77,7 +77,7 @@ forevex sync activity 0x… --market <condition_id>
 
 ## 数据模型（分层）
 
-1. **`wallet_user_snapshot`**：`proxy` 主键；Gamma `public-profile`、Data `value` / `traded`、`v1/user-stats`、`user-pnl` 系列 JSON。
+1. **`wallet_user_snapshot`**：`proxy` 主键；Gamma `public-profile`、Data `value` / `traded`、`v1/user-stats`、`user-pnl` 系列 JSON；**`positions_synced_at`** 在每次成功 `positions/sync` 后更新，用于客户端区分「从未拉过持仓」与「已拉过但 0 仓」。
 2. **`positions`**：`open` / `closed`，每行 `position_key` + `raw` JSON。
 3. **`market_activity_cache`**：按 `(proxy, market_condition_id)` 存 activity 数组。
 

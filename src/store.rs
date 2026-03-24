@@ -93,7 +93,7 @@ impl Store {
     ) -> anyhow::Result<Option<WalletSnapshotRow>> {
         let row = sqlx::query_as::<_, WalletSnapshotRow>(
             r#"SELECT proxy_address, resolved_username, gamma_profile, data_value, data_traded,
-                      user_stats, user_pnl, profile_fetched_at, metrics_fetched_at
+                      user_stats, user_pnl, profile_fetched_at, metrics_fetched_at, positions_synced_at
                FROM wallet_user_snapshot WHERE proxy_address = $1"#,
         )
         .bind(proxy)
@@ -131,6 +131,19 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// 在成功写入 open/closed 持仓后调用，供客户端判断可走「只读 GET + 后台 sync」。
+    pub async fn set_positions_synced_at(&self, proxy: &str) -> anyhow::Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"UPDATE wallet_user_snapshot SET positions_synced_at = $2 WHERE proxy_address = $1"#,
+        )
+        .bind(proxy)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -215,6 +228,7 @@ pub struct WalletSnapshotRow {
     pub user_pnl: Option<Json<Value>>,
     pub profile_fetched_at: Option<DateTime<Utc>>,
     pub metrics_fetched_at: Option<DateTime<Utc>>,
+    pub positions_synced_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
