@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forevex
+      POSTGRES_PASSWORD: forevex
+      POSTGRES_DB: forevex
+    ports:
+      - "5433:5432"
+    volumes:
+      - forevex_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forevex -d forevex"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  forevex:
+    build: .
+    ports:
+      - "8088:8080"
+    environment:
+      DATABASE_URL: postgres://forevex:forevex@postgres:5432/forevex
+      FOREVEX_BIND: 0.0.0.0:8080
+      FOREVEX_PUBLIC_BASE_URL: http://localhost:8088
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  forevex_pg:
