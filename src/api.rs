@@ -1,3 +1,16 @@
+//! REST-style HTTP API under **`/api/v1`** (JSON, pluralized collections, noun routes).
+//!
+//! | Method | Path | Body / query | Description |
+//! |--------|------|----------------|-------------|
+//! | `GET` | `/health` | — | Liveness |
+//! | `GET` | `/api/v1/meta` | — | Service metadata |
+//! | `POST` | `/api/v1/users` | `{ "input": "@slug" \| "0x…" }` | Resolve + sync upstream → DB, **201 Created** |
+//! | `GET` | `/api/v1/users/:proxy` | — | Wallet snapshot JSON |
+//! | `GET` | `/api/v1/users/:proxy/positions` | `?state=open\|closed` | List cached positions |
+//! | `POST` | `/api/v1/users/:proxy/positions/sync` | — | Refresh positions from Data API |
+//! | `GET` | `/api/v1/users/:proxy/activity` | `?market=<condition_id>` | Cached activity |
+//! | `POST` | `/api/v1/users/:proxy/activity` | `{ "market": "<condition_id>" }` | Sync activity for market |
+
 use crate::config::Config;
 use crate::store::Store;
 use crate::sync;
@@ -26,14 +39,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let v1 = Router::new()
+        .route("/meta", get(meta))
+        .route("/users", post(create_user))
+        .route("/users/:proxy", get(get_user))
+        .route("/users/:proxy/positions", get(list_positions))
+        .route("/users/:proxy/positions/sync", post(sync_positions_path))
+        .route(
+            "/users/:proxy/activity",
+            get(get_activity).post(sync_activity_body),
+        );
+
     Router::new()
         .route("/health", get(health))
-        .route("/v1/meta", get(meta))
-        .route("/v1/users/sync", post(sync_user_body))
-        .route("/v1/users/:proxy", get(get_user))
-        .route("/v1/wallets/:proxy/positions", get(list_positions))
-        .route("/v1/wallets/:proxy/positions/sync", post(sync_positions_path))
-        .route("/v1/wallets/:proxy/activity", get(get_activity).post(sync_activity_query))
+        .nest("/api/v1", v1)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
@@ -46,23 +65,26 @@ async fn health() -> impl IntoResponse {
 async fn meta(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({
         "publicBaseUrl": s.config.public_base_url,
+        "apiVersion": "v1",
         "note": "Auth not enabled in v0.1; add later behind reverse proxy or API key."
     }))
 }
 
 #[derive(Deserialize)]
-struct SyncUserBody {
+struct CreateUserBody {
+    /// `@slug` or `0x…` proxy address.
     input: String,
 }
 
-async fn sync_user_body(
+/// `POST /api/v1/users` — upsert user snapshot from upstream (canonical “create” for this service).
+async fn create_user(
     State(s): State<Arc<AppState>>,
-    Json(body): Json<SyncUserBody>,
-) -> Result<Json<Value>, ApiError> {
+    Json(body): Json<CreateUserBody>,
+) -> Result<impl IntoResponse, ApiError> {
     let v = sync::sync_user(&s.store, &s.upstream, &body.input)
         .await
         .map_err(ApiError::from_anyhow)?;
-    Ok(Json(v))
+    Ok((StatusCode::CREATED, Json(v)))
 }
 
 async fn get_user(
@@ -75,7 +97,12 @@ async fn get_user(
         .fetch_wallet_snapshot(&p)
         .await
         .map_err(ApiError::from_anyhow)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "wallet not found; POST /v1/users/sync first"))?;
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "wallet not found; POST /api/v1/users with {\"input\":\"@slug or 0x…\"} first",
+            )
+        })?;
     Ok(Json(json!({
         "proxy": row.proxy_address,
         "resolvedUsername": row.resolved_username,
@@ -105,7 +132,7 @@ async fn list_positions(
         if x != "open" && x != "closed" {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "state must be open or closed",
+                "query parameter state must be \"open\" or \"closed\"",
             ));
         }
     }
@@ -136,38 +163,57 @@ struct ActivityQuery {
     market: String,
 }
 
+#[derive(Deserialize)]
+struct ActivitySyncBody {
+    market: String,
+}
+
 async fn get_activity(
     State(s): State<Arc<AppState>>,
     Path(proxy): Path<String>,
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let p = proxy.trim().to_lowercase();
+    let m = q.market.trim();
+    if m.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing required query parameter: market",
+        ));
+    }
     let row = s
         .store
-        .fetch_activity(&p, &q.market)
+        .fetch_activity(&p, m)
         .await
         .map_err(ApiError::from_anyhow)?;
     let Some((events, max_ts, synced)) = row else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
-            "no cached activity; POST /v1/wallets/:proxy/activity?market=…",
+            "no cached activity for this market; POST /api/v1/users/:proxy/activity with JSON body {\"market\":\"<condition_id>\"}",
         ));
     };
     Ok(Json(json!({
         "proxy": p,
-        "market": q.market,
+        "market": m,
         "events": events,
         "maxEventTs": max_ts,
         "syncedAt": synced,
     })))
 }
 
-async fn sync_activity_query(
+async fn sync_activity_body(
     State(s): State<Arc<AppState>>,
     Path(proxy): Path<String>,
-    Query(q): Query<ActivityQuery>,
+    Json(body): Json<ActivitySyncBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let v = sync::sync_activity(&s.store, &s.upstream, &proxy, &q.market)
+    let m = body.market.trim();
+    if m.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "JSON body must include non-empty \"market\" (condition id)",
+        ));
+    }
+    let v = sync::sync_activity(&s.store, &s.upstream, &proxy, m)
         .await
         .map_err(ApiError::from_anyhow)?;
     Ok(Json(v))

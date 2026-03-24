@@ -18,14 +18,33 @@ cargo run -- serve
 
 ```bash
 curl -s http://127.0.0.1:3000/health
-curl -s -X POST http://127.0.0.1:3000/v1/users/sync -H 'content-type: application/json' \
+# 创建/同步用户（201 Created）
+curl -s -X POST http://127.0.0.1:3000/api/v1/users -H 'content-type: application/json' \
   -d '{"input":"@YatSen"}'   # 或 0x… 地址
-curl -s http://127.0.0.1:3000/v1/users/0x你的proxy
-curl -s -X POST http://127.0.0.1:3000/v1/wallets/0x…/positions/sync
-curl -s 'http://127.0.0.1:3000/v1/wallets/0x…/positions?state=open'
-curl -s -X POST 'http://127.0.0.1:3000/v1/wallets/0x…/activity?market=条件ID'
-curl -s 'http://127.0.0.1:3000/v1/wallets/0x…/activity?market=条件ID'
+curl -s http://127.0.0.1:3000/api/v1/users/0x你的proxy
+curl -s -X POST http://127.0.0.1:3000/api/v1/users/0x…/positions/sync
+curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/positions?state=open'
+# 同步某市场 activity（JSON body）
+curl -s -X POST http://127.0.0.1:3000/api/v1/users/0x…/activity \
+  -H 'content-type: application/json' -d '{"market":"<condition_id>"}'
+# 读取缓存
+curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/activity?market=<condition_id>'
 ```
+
+### HTTP API（REST，`/api/v1`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/api/v1/meta` | 元信息 |
+| `POST` | `/api/v1/users` | Body: `{"input":"@slug或0x…"}`，上游拉取并写入 DB → **201** |
+| `GET` | `/api/v1/users/{proxy}` | 用户快照 JSON |
+| `GET` | `/api/v1/users/{proxy}/positions` | Query: `state=open` / `closed` |
+| `POST` | `/api/v1/users/{proxy}/positions/sync` | 从 Data API 刷新持仓 |
+| `GET` | `/api/v1/users/{proxy}/activity` | Query: `market=<condition_id>`，读缓存 |
+| `POST` | `/api/v1/users/{proxy}/activity` | Body: `{"market":"<condition_id>"}`，同步 activity |
+
+错误响应：`{ "error": "…" }`，HTTP 状态码区分 400 / 404 / 502 等。
 
 全栈 Compose（含 `forevex` 镜像）：
 
@@ -63,6 +82,15 @@ forevex sync activity 0x… --market <condition_id>
 3. **`market_activity_cache`**：按 `(proxy, market_condition_id)` 存 activity 数组。
 
 `@slug` 解析：请求 Gamma `GET /public-profile?username=`（无 `@` 前缀），读取 `proxyWallet` 作为后续 Data API 的 `user`。
+
+## 与 polymarket-account-analyzer 的区别
+
+| 服务 | 典型 HTTP 路由 | 用途 |
+|------|----------------|------|
+| **forevex**（本目录） | `/health`、`/api/v1/users/...` 等 | 官方 API 同步进 Postgres，REST 读库 |
+| **polymarket-account-analyzer** | `GET /analyze/:wallet`、`GET /position-activity/:wallet?market=` 等 | 深度分析报告、KPI、策略推断、PG 报告缓存 |
+
+前端建议：**只连 forevex** 时**不要设置** **`NEXT_PUBLIC_API_BASE_URL`**（则不请求 `GET /analyze`），并配置 **`NEXT_PUBLIC_FOREVEX_URL`** 或 **`NEXT_PUBLIC_FOREVEX_USE_PROXY` + `FOREVEX_UPSTREAM_URL`**。若与分析器并行部署，再设置 **`NEXT_PUBLIC_API_BASE_URL`** 指向分析器；**`NEXT_PUBLIC_SKIP_ANALYZE=1`** 在已配基址时仅跳过拉报告。把 API 基址误指到 forevex 会得到 **`GET /analyze` 404**。
 
 ## 存储：`jsonb` vs 强类型列
 
