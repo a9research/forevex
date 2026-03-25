@@ -218,8 +218,8 @@ pub fn compute_position_analytics(proxy: &str, open: &[Value], closed: &[Value])
         })
         .collect();
     market_distribution.sort_by(|a, b| {
-        b.notional
-            .partial_cmp(&a.notional)
+        b.notional_usd
+            .partial_cmp(&a.notional_usd)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
