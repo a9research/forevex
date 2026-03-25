@@ -45,7 +45,7 @@ curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/analytics/positions'
 | `POST` | `/api/v1/users/{proxy}/positions/sync` | 从 Data API 刷新持仓 |
 | `GET` | `/api/v1/users/{proxy}/activity` | Query: `market=<condition_id>`，读缓存 |
 | `POST` | `/api/v1/users/{proxy}/activity` | Body: `{"market":"<condition_id>"}`，同步 activity |
-| `GET` | `/api/v1/users/{proxy}/analytics/positions` | 仅基于 **已缓存 open+closed 持仓** 的聚合（无 `/trades`）：已平仓胜率、按 `slug` 规则分类的胜率与金额/条数分布、**均价**价位桶、Yes/No 持仓条数比；需先 `POST …/positions/sync` |
+| `GET` | `/api/v1/users/{proxy}/analytics/positions` | 基于 **已缓存** open+closed 持仓；Market distribution 按 **Gamma** `category` + [`/markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)（见 `gamma_market_tags_cache`），再回退 slug 子串规则；另有胜率、价位桶、Yes/No；需先 `POST …/positions/sync` |
 
 错误响应：`{ "error": "…" }`，HTTP 状态码区分 400 / 404 / 502 等。
 
@@ -110,9 +110,20 @@ curl -sS http://127.0.0.1:3000/health
 
 处理：二选一占用 `3000`，或把 forevex 改绑 **`3001`**（改 `FOREVEX_BIND` + compose `ports` + 前端 `NEXT_PUBLIC_FOREVEX_URL`）。更新镜像后建议 **`docker compose build --no-cache`** 再 **`up -d`**，避免旧层缓存。
 
+## Market distribution：Gamma 标签（不再整屏 `unknown`）
+
+`GET /api/v1/users/:proxy/analytics/positions` 在聚合前会按持仓里的 **`slug`** 去重，并对每个 slug（上限见 `FOREVEX_GAMMA_MAX_SLUG_ENRICH`，默认 **120**）：
+
+1. 读 **`gamma_market_tags_cache`**（命中且未过期则跳过网络）。
+2. 否则请求 Gamma **`GET /markets/slug/{slug}?include_tag=true`**，取 `id`、`category`、内嵌 `tags`。
+3. 若有 `id`，再请求官方文档中的 **[`GET /markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)**；若返回非空数组，则以该列表为准写入 `tags`（`tags_source=market_id_tags`）。
+4. **primary_bucket** 优先 `category`，否则用标签的 `label` / `slug`，最后才回退与旧版一致的 **`classify_slug`**（子串规则）。
+
+环境变量：`FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC`（默认 7 天）、`FOREVEX_GAMMA_MAX_SLUG_ENRICH`。
+
 ## 存储：`jsonb` vs 强类型列
 
-当前实现以 **`jsonb` + 少量键列**（`proxy`、`state`、`position_key`、`market`）为主。
+当前实现以 **`jsonb` + 少量键列**（`proxy`、`state`、`position_key`、`market`）为主；另见表 **`gamma_market_tags_cache`**（按 **slug** 缓存 Gamma 类目与标签 JSON）。
 
 - **仅 jsonb**：上线快，上游加字段自动保留；查询/索引要靠 PostgreSQL JSON 算子，Rust 侧少结构保证。
 - **强类型列**：每个字段对应 SQL 类型，迁移与编译期校验强，上游一变就要改代码和 migration。

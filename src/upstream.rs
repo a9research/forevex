@@ -53,6 +53,22 @@ impl Upstream {
         serde_json::from_str(&body).context("gamma public-profile JSON")
     }
 
+    /// `GET /markets/slug/{slug}?include_tag=true` — `category`、`tags`、`id`。
+    pub async fn gamma_market_by_slug_include_tags(&self, slug: &str) -> anyhow::Result<Value> {
+        let enc = urlencoding::encode(slug.trim());
+        let url = format!(
+            "{}/markets/slug/{}?include_tag=true",
+            self.cfg.gamma_origin, enc
+        );
+        self.get_json_optional(&url).await
+    }
+
+    /// [`GET /markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id) — `id` 为 Gamma 整数 market id。
+    pub async fn gamma_market_tags_by_id(&self, market_id: i64) -> anyhow::Result<Value> {
+        let url = format!("{}/markets/{}/tags", self.cfg.gamma_origin, market_id);
+        self.get_json_optional(&url).await
+    }
+
     /// Best-effort JSON GET; returns Err on non-2xx.
     pub async fn get_json_optional(&self, url: &str) -> anyhow::Result<Value> {
         let resp = self.http.get(url).send().await?;

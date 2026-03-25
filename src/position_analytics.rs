@@ -1,10 +1,19 @@
 //! 仅基于 Data API **open + closed positions** 的聚合（无 `/trades`）。
 //! 口径说明见响应内 `notes` 与 `source` 字段。
 
+use crate::gamma_tags::normalize_slug_key;
 use crate::market_type::classify_slug;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
+
+fn bucket_for_slug(slug: &str, slug_to_bucket: &HashMap<String, String>) -> String {
+    let k = normalize_slug_key(slug);
+    slug_to_bucket
+        .get(&k)
+        .cloned()
+        .unwrap_or_else(|| classify_slug(slug).to_string())
+}
 
 fn num_field(o: &serde_json::Map<String, Value>, a: &str, b: &str) -> Option<f64> {
     o.get(a)
@@ -131,11 +140,16 @@ pub struct PositionAnalytics {
     pub notes: Vec<&'static str>,
 }
 
-pub fn compute_position_analytics(proxy: &str, open: &[Value], closed: &[Value]) -> PositionAnalytics {
+pub fn compute_position_analytics(
+    proxy: &str,
+    open: &[Value],
+    closed: &[Value],
+    slug_to_bucket: &HashMap<String, String>,
+) -> PositionAnalytics {
     let notes = vec![
         "Aggregates from cached positions only (no /trades).",
         "closed_win_rate_pct: count(realizedPnl>0) / count(valid realizedPnl on closed).",
-        "market_distribution: sum(notional) and count by classify_slug(slug); notional uses effective position value (see code).",
+        "market_distribution: sum(notional) by Gamma tags cache (category/tags) when available, else classify_slug(slug).",
         "price_buckets_avg_price: histogram of avgPrice per position (open+closed), not per-fill.",
         "outcome_position_bias: share of position rows by outcome text (yes/no), not trade fills.",
     ];
@@ -164,7 +178,7 @@ pub fn compute_position_analytics(proxy: &str, open: &[Value], closed: &[Value])
                 closed_wins += 1;
             }
             let slug = slug_of(o);
-            let mt = classify_slug(slug).to_string();
+            let mt = bucket_for_slug(slug, slug_to_bucket);
             let e = win_by_type.entry(mt).or_insert((0, 0));
             e.1 += 1;
             if pnl > 0.0 {
@@ -182,7 +196,7 @@ pub fn compute_position_analytics(proxy: &str, open: &[Value], closed: &[Value])
     for v in open {
         let Some(o) = v.as_object() else { continue };
         let slug = slug_of(o);
-        let mt = classify_slug(slug).to_string();
+        let mt = bucket_for_slug(slug, slug_to_bucket);
         let ev = effective_value_usd(o, true);
         let e = dist.entry(mt).or_insert((0, 0.0));
         e.0 += 1;
@@ -197,7 +211,7 @@ pub fn compute_position_analytics(proxy: &str, open: &[Value], closed: &[Value])
     for v in closed {
         let Some(o) = v.as_object() else { continue };
         let slug = slug_of(o);
-        let mt = classify_slug(slug).to_string();
+        let mt = bucket_for_slug(slug, slug_to_bucket);
         let ev = effective_value_usd(o, false);
         let e = dist.entry(mt).or_insert((0, 0.0));
         e.0 += 1;

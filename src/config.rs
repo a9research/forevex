@@ -13,6 +13,10 @@ pub struct Config {
     pub user_pnl_origin: String,
     pub http_timeout: Duration,
     pub rate_limit_ms: u64,
+    /// `gamma_market_tags_cache` 成功行 TTL（秒）；失败行 1h 内不重打 Gamma。
+    pub gamma_tags_cache_ttl_sec: u64,
+    /// 单次 `/analytics/positions` 最多对多少 **不同 slug** 打 Gamma（其余回退 `classify_slug`）。
+    pub gamma_max_slug_enrich: u32,
 }
 
 impl Config {
@@ -47,6 +51,14 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(120);
+        let gamma_tags_cache_ttl_sec: u64 = std::env::var("FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(604_800);
+        let gamma_max_slug_enrich: u32 = std::env::var("FOREVEX_GAMMA_MAX_SLUG_ENRICH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
         Ok(Self {
             database_url,
             public_base_url,
@@ -57,6 +69,8 @@ impl Config {
             user_pnl_origin,
             http_timeout: Duration::from_secs(timeout_sec.max(5)),
             rate_limit_ms: rate_limit_ms.max(0),
+            gamma_tags_cache_ttl_sec: gamma_tags_cache_ttl_sec.max(60),
+            gamma_max_slug_enrich: gamma_max_slug_enrich.max(1),
         })
     }
 }

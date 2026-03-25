@@ -10,9 +10,10 @@
 //! | `POST` | `/api/v1/users/:proxy/positions/sync` | — | Refresh positions from Data API |
 //! | `GET` | `/api/v1/users/:proxy/activity` | `?market=<condition_id>` | Cached activity |
 //! | `POST` | `/api/v1/users/:proxy/activity` | `{ "market": "<condition_id>" }` | Sync activity for market |
-//! | `GET` | `/api/v1/users/:proxy/analytics/positions` | — | 仅 **持仓** 聚合：胜率、按类型胜率/分布、均价桶、Yes/No 条数比 |
+//! | `GET` | `/api/v1/users/:proxy/analytics/positions` | — | 持仓聚合：胜率、**按 Gamma 标签分类**（`gamma_market_tags_cache`：`/markets/slug?include_tag` + [`/markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)）、均价桶、Yes/No 比 |
 
 use crate::config::Config;
+use crate::gamma_tags::{collect_slugs_from_positions, ensure_gamma_buckets_for_slugs};
 use crate::position_analytics::compute_position_analytics;
 use crate::store::Store;
 use crate::sync;
@@ -241,7 +242,11 @@ async fn get_position_analytics(
         .map_err(ApiError::from_anyhow)?;
     let open: Vec<Value> = open_rows.into_iter().map(|(_, raw, _)| raw).collect();
     let closed: Vec<Value> = closed_rows.into_iter().map(|(_, raw, _)| raw).collect();
-    let a = compute_position_analytics(&p, &open, &closed);
+    let slugs = collect_slugs_from_positions(&open, &closed);
+    let slug_map = ensure_gamma_buckets_for_slugs(&s.store, &s.upstream, &s.config, &slugs)
+        .await
+        .map_err(ApiError::from_anyhow)?;
+    let a = compute_position_analytics(&p, &open, &closed, &slug_map);
     Ok(Json(a))
 }
 

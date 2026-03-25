@@ -215,6 +215,70 @@ impl Store {
         .await?;
         Ok(row.map(|r| (r.events.0, r.max_event_ts, r.synced_at)))
     }
+
+    pub async fn fetch_gamma_market_tags_cache(
+        &self,
+        slug: &str,
+    ) -> anyhow::Result<Option<GammaMarketTagsCacheRow>> {
+        let row = sqlx::query_as::<_, GammaMarketTagsCacheRow>(
+            r#"SELECT slug, gamma_market_id, category, tags, tags_source, primary_bucket, fetched_at, fetch_error
+               FROM gamma_market_tags_cache WHERE slug = $1"#,
+        )
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn upsert_gamma_market_tags_cache(
+        &self,
+        slug: &str,
+        gamma_market_id: Option<&str>,
+        category: Option<&str>,
+        tags: &Value,
+        tags_source: &str,
+        primary_bucket: &str,
+        fetch_error: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO gamma_market_tags_cache (
+              slug, gamma_market_id, category, tags, tags_source, primary_bucket, fetched_at, fetch_error
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (slug) DO UPDATE SET
+              gamma_market_id = EXCLUDED.gamma_market_id,
+              category = EXCLUDED.category,
+              tags = EXCLUDED.tags,
+              tags_source = EXCLUDED.tags_source,
+              primary_bucket = EXCLUDED.primary_bucket,
+              fetched_at = EXCLUDED.fetched_at,
+              fetch_error = EXCLUDED.fetch_error"#,
+        )
+        .bind(slug)
+        .bind(gamma_market_id)
+        .bind(category)
+        .bind(Json(tags.clone()))
+        .bind(tags_source)
+        .bind(primary_bucket)
+        .bind(now)
+        .bind(fetch_error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct GammaMarketTagsCacheRow {
+    pub slug: String,
+    pub gamma_market_id: Option<String>,
+    pub category: Option<String>,
+    pub tags: Json<Value>,
+    pub tags_source: String,
+    pub primary_bucket: String,
+    pub fetched_at: DateTime<Utc>,
+    pub fetch_error: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
