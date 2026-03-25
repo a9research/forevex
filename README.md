@@ -29,6 +29,8 @@ curl -s -X POST http://127.0.0.1:3000/api/v1/users/0x…/activity \
   -H 'content-type: application/json' -d '{"market":"<condition_id>"}'
 # 读取缓存
 curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/activity?market=<condition_id>'
+# 持仓聚合分析（需已 sync 持仓）
+curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/analytics/positions'
 ```
 
 ### HTTP API（REST，`/api/v1`）
@@ -43,6 +45,7 @@ curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/activity?market=<condition_id>
 | `POST` | `/api/v1/users/{proxy}/positions/sync` | 从 Data API 刷新持仓 |
 | `GET` | `/api/v1/users/{proxy}/activity` | Query: `market=<condition_id>`，读缓存 |
 | `POST` | `/api/v1/users/{proxy}/activity` | Body: `{"market":"<condition_id>"}`，同步 activity |
+| `GET` | `/api/v1/users/{proxy}/analytics/positions` | 仅基于 **已缓存 open+closed 持仓** 的聚合（无 `/trades`）：已平仓胜率、按 `slug` 规则分类的胜率与金额/条数分布、**均价**价位桶、Yes/No 持仓条数比；需先 `POST …/positions/sync` |
 
 错误响应：`{ "error": "…" }`，HTTP 状态码区分 400 / 404 / 502 等。
 

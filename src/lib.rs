@@ -1,5 +1,7 @@
 pub mod api;
 pub mod config;
+pub mod market_type;
+pub mod position_analytics;
 pub mod store;
 pub mod sync;
 pub mod upstream;

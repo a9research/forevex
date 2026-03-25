@@ -10,8 +10,10 @@
 //! | `POST` | `/api/v1/users/:proxy/positions/sync` | — | Refresh positions from Data API |
 //! | `GET` | `/api/v1/users/:proxy/activity` | `?market=<condition_id>` | Cached activity |
 //! | `POST` | `/api/v1/users/:proxy/activity` | `{ "market": "<condition_id>" }` | Sync activity for market |
+//! | `GET` | `/api/v1/users/:proxy/analytics/positions` | — | 仅 **持仓** 聚合：胜率、按类型胜率/分布、均价桶、Yes/No 条数比 |
 
 use crate::config::Config;
+use crate::position_analytics::compute_position_analytics;
 use crate::store::Store;
 use crate::sync;
 use crate::upstream::Upstream;
@@ -56,6 +58,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/users/:proxy/activity",
             get(get_activity).post(sync_activity_body),
+        )
+        .route(
+            "/api/v1/users/:proxy/analytics/positions",
+            get(get_position_analytics),
         )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
@@ -204,6 +210,39 @@ async fn get_activity(
         "maxEventTs": max_ts,
         "syncedAt": synced,
     })))
+}
+
+async fn get_position_analytics(
+    State(s): State<Arc<AppState>>,
+    Path(proxy): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let p = proxy.trim().to_lowercase();
+    let exists = s
+        .store
+        .fetch_wallet_snapshot(&p)
+        .await
+        .map_err(ApiError::from_anyhow)?
+        .is_some();
+    if !exists {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "wallet not found; POST /api/v1/users with {\"input\":\"@slug or 0x…\"} first",
+        ));
+    }
+    let open_rows = s
+        .store
+        .list_positions(&p, Some("open"))
+        .await
+        .map_err(ApiError::from_anyhow)?;
+    let closed_rows = s
+        .store
+        .list_positions(&p, Some("closed"))
+        .await
+        .map_err(ApiError::from_anyhow)?;
+    let open: Vec<Value> = open_rows.into_iter().map(|(_, raw, _)| raw).collect();
+    let closed: Vec<Value> = closed_rows.into_iter().map(|(_, raw, _)| raw).collect();
+    let a = compute_position_analytics(&p, &open, &closed);
+    Ok(Json(a))
 }
 
 async fn sync_activity_body(
