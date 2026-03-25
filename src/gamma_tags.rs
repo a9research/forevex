@@ -3,6 +3,7 @@
 //! 拉标签；结果写入 `gamma_market_tags_cache`，供持仓聚合按 **primary_bucket** 分类。
 
 use crate::config::Config;
+use crate::gamma_taxonomy::GammaTaxonomy;
 use crate::market_type::classify_slug;
 use crate::store::{GammaMarketTagsCacheRow, Store};
 use crate::upstream::Upstream;
@@ -69,6 +70,7 @@ fn gamma_market_id_num(v: &Value) -> Option<i64> {
 /// 拉取并解析单个 slug；失败时仍返回可展示桶名（`classify_slug` 或 `unknown`）。
 pub async fn resolve_slug_tags(
     up: &Upstream,
+    taxonomy: &GammaTaxonomy,
     slug: &str,
 ) -> anyhow::Result<(String, Option<String>, Option<String>, Value, &'static str, Option<String>)> {
     let slug_trim = slug.trim();
@@ -112,11 +114,7 @@ pub async fn resolve_slug_tags(
     }
 
     let tag_arr = tags_val.as_array().map(Vec::as_slice).unwrap_or(&[]);
-    let bucket = primary_bucket_from_gamma_parts(
-        category.as_deref(),
-        tag_arr,
-        slug_trim,
-    );
+    let bucket = taxonomy.distribution_bucket(category.as_deref(), tag_arr, slug_trim);
 
     Ok((bucket, gid, category, tags_val, src, None))
 }
@@ -143,6 +141,8 @@ pub async fn ensure_gamma_buckets_for_slugs(
     keys.sort();
     let max = cfg.gamma_max_slug_enrich as usize;
 
+    let taxonomy = GammaTaxonomy::cached(up, cfg.gamma_taxonomy_cache_ttl_sec).await;
+
     for (i, key) in keys.iter().enumerate() {
         let raw = repr.get(key).unwrap();
         if i >= max {
@@ -160,7 +160,7 @@ pub async fn ensure_gamma_buckets_for_slugs(
             }
         }
 
-        match resolve_slug_tags(up, raw).await {
+        match resolve_slug_tags(up, &taxonomy, raw).await {
             Ok((bucket, gid, cat, tags, src, _)) => {
                 if let Err(e) = store
                     .upsert_gamma_market_tags_cache(

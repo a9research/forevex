@@ -189,4 +189,8 @@ impl Upstream {
         self.sleep_rate().await;
         Ok(v)
     }
+
+    pub(crate) fn config(&self) -> &Config {
+        &self.cfg
+    }
 }

@@ -17,6 +17,8 @@ pub struct Config {
     pub gamma_tags_cache_ttl_sec: u64,
     /// 单次 `/analytics/positions` 最多对多少 **不同 slug** 打 Gamma（其余回退 `classify_slug`）。
     pub gamma_max_slug_enrich: u32,
+    /// 进程内 Gamma `/tags`+`/sports` 全量目录缓存 TTL（秒）。
+    pub gamma_taxonomy_cache_ttl_sec: u64,
 }
 
 impl Config {
@@ -59,6 +61,10 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(120);
+        let gamma_taxonomy_cache_ttl_sec: u64 = std::env::var("FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(86_400);
         Ok(Self {
             database_url,
             public_base_url,
@@ -71,6 +77,7 @@ impl Config {
             rate_limit_ms: rate_limit_ms.max(0),
             gamma_tags_cache_ttl_sec: gamma_tags_cache_ttl_sec.max(60),
             gamma_max_slug_enrich: gamma_max_slug_enrich.max(1),
+            gamma_taxonomy_cache_ttl_sec: gamma_taxonomy_cache_ttl_sec.max(60),
         })
     }
 }
