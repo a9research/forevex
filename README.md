@@ -112,7 +112,7 @@ curl -sS http://127.0.0.1:3000/health
 
 ## Market distribution：Gamma 标签（不再整屏 `unknown`）
 
-`GET /api/v1/users/:proxy/analytics/positions` 在聚合前会按持仓里的 **`slug`** 去重，并对每个 slug（上限见 `FOREVEX_GAMMA_MAX_SLUG_ENRICH`，默认 **120**）：
+`GET /api/v1/users/:proxy/analytics/positions` 在聚合前会按持仓里的 **`slug`** 去重，并对每个 slug（上限见 `FOREVEX_GAMMA_MAX_SLUG_ENRICH`，默认 **500**）：
 
 1. 读 **`gamma_market_tags_cache`**（命中且未过期则跳过网络）。
 2. 否则请求 Gamma **`GET /markets/slug/{slug}?include_tag=true`**，取 `id`、`category`、内嵌 `tags`。

@@ -60,7 +60,7 @@ impl Config {
         let gamma_max_slug_enrich: u32 = std::env::var("FOREVEX_GAMMA_MAX_SLUG_ENRICH")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(120);
+            .unwrap_or(500);
         let gamma_taxonomy_cache_ttl_sec: u64 = std::env::var("FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC")
             .ok()
             .and_then(|s| s.parse().ok())

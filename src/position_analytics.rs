@@ -2,18 +2,28 @@
 //! 口径说明见响应内 `notes` 与 `source` 字段。
 
 use crate::gamma_tags::normalize_slug_key;
-use crate::market_type::classify_slug;
+use crate::market_type::{classify_slug, fallback_bucket_from_title};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-fn bucket_for_slug(slug: &str, slug_to_bucket: &HashMap<String, String>) -> String {
+fn bucket_for_position(
+    slug: &str,
+    title: &str,
+    slug_to_bucket: &HashMap<String, String>,
+) -> String {
     let k = normalize_slug_key(slug);
-    slug_to_bucket
+    let base = slug_to_bucket
         .get(&k)
         .cloned()
-        .unwrap_or_else(|| classify_slug(slug).to_string())
+        .unwrap_or_else(|| classify_slug(slug).to_string());
+    if base != "unknown" {
+        return base;
+    }
+    fallback_bucket_from_title(title)
+        .map(String::from)
+        .unwrap_or(base)
 }
 
 fn num_field(o: &serde_json::Map<String, Value>, a: &str, b: &str) -> Option<f64> {
@@ -275,7 +285,8 @@ pub fn compute_position_analytics(
                 closed_wins += 1;
             }
             let slug = slug_of(o);
-            let mt = bucket_for_slug(slug, slug_to_bucket);
+            let tit = title_of(o);
+            let mt = bucket_for_position(slug, &tit, slug_to_bucket);
             let e = win_by_type.entry(mt).or_insert((0, 0));
             e.1 += 1;
             if pnl > 0.0 {
@@ -293,9 +304,9 @@ pub fn compute_position_analytics(
     for v in open {
         let Some(o) = v.as_object() else { continue };
         let slug = slug_of(o);
-        let mt = bucket_for_slug(slug, slug_to_bucket);
-        let ev = effective_value_usd(o, true);
         let tit = title_of(o);
+        let mt = bucket_for_position(slug, &tit, slug_to_bucket);
+        let ev = effective_value_usd(o, true);
         dist.entry(mt).or_default().add(slug, &tit, ev);
         let ap = avg_price(o);
         if ap > 0.0 {
@@ -307,9 +318,9 @@ pub fn compute_position_analytics(
     for v in closed {
         let Some(o) = v.as_object() else { continue };
         let slug = slug_of(o);
-        let mt = bucket_for_slug(slug, slug_to_bucket);
-        let ev = effective_value_usd(o, false);
         let tit = title_of(o);
+        let mt = bucket_for_position(slug, &tit, slug_to_bucket);
+        let ev = effective_value_usd(o, false);
         dist.entry(mt).or_default().add(slug, &tit, ev);
         let ap = avg_price(o);
         if ap > 0.0 {
