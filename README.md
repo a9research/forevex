@@ -125,6 +125,19 @@ curl -sS http://127.0.0.1:3000/health
 
 升级本逻辑后若仍看到旧桶名，可缩短 `FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC` 或 **`TRUNCATE gamma_market_tags_cache;`** 强制重算。
 
+### 清空数据库中的业务数据（开发/重置）
+
+可执行仓库内脚本（**不删** `_sqlx_migrations`，无需重跑 migration）：
+
+```bash
+# 本机 psql（DATABASE_URL 与 forevex 使用的一致）
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/reset-local-data.sql
+```
+
+会清空：`wallet_user_snapshot`（并 `CASCADE` 清空 `positions`、`market_activity_cache`）、`gamma_market_tags_cache`。
+
+**生产环境**务必先备份再执行；清空后需对用户重新 `POST /api/v1/users` 与 `POST …/positions/sync` 才会再有数据。
+
 ## 存储：`jsonb` vs 强类型列
 
 当前实现以 **`jsonb` + 少量键列**（`proxy`、`state`、`position_key`、`market`）为主；另见表 **`gamma_market_tags_cache`**（按 **slug** 缓存 Gamma 类目与标签 JSON）。
