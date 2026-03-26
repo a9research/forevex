@@ -200,6 +200,8 @@ fn is_pop_culture_cluster(n: &str) -> bool {
         "tv",
         "oscars",
         "grammy",
+        "awards",
+        "award",
     ];
     SUB.iter().any(|s| *s == n || n.contains(s))
 }
@@ -239,10 +241,71 @@ fn is_weather_cluster(n: &str) -> bool {
     n.contains("weather") || n.contains("temperature") || n.contains("hurricane")
 }
 
+/// 伊朗相关（与「地缘政治」并列的官网式顶层桶；人物/地名标签归此）。
+fn is_iran_cluster(n: &str) -> bool {
+    if n == "iran" || n.contains("iranian") {
+        return true;
+    }
+    const SUB: &[&str] = &[
+        "khamenei",
+        "tehran",
+        "irgc",
+        "qom",
+        "houthi",
+        "rouhani",
+        "zarif",
+    ];
+    SUB.iter().any(|s| *s == n || n.contains(s))
+}
+
+fn is_elections_topic(n: &str) -> bool {
+    matches!(
+        n,
+        "elections" | "election" | "us-election" | "midterms" | "primaries"
+    )
+}
+
+fn is_mentions_topic(n: &str) -> bool {
+    n == "mentions" || n == "mention"
+}
+
+/// 过细的人物/叶子 slug（Gamma 标签），并入 **politics**，避免 Market distribution 出现人名行。
+fn is_politics_figure_slug(n: &str) -> bool {
+    const SUB: &[&str] = &[
+        "keir",
+        "starmer",
+        "sunak",
+        "truss",
+        "macron",
+        "merkel",
+        "scholz",
+        "trump",
+        "biden",
+        "harris",
+        "obama",
+        "pelosi",
+        "mcconnell",
+    ];
+    SUB.contains(&n)
+}
+
 /// 将 Gamma `category` / 标签展示名（已 `normalize_bucket_key`）映射到与官网 Topics 一致的**顶层桶**。
 fn rollup_to_polymarket_topic(n: &str) -> Option<&'static str> {
     if is_sports_cluster(n) {
         return Some("sports");
+    }
+    if is_iran_cluster(n) {
+        return Some("iran");
+    }
+    // 「选举」须在含 `election` 的泛政治规则之前
+    if is_elections_topic(n) {
+        return Some("elections");
+    }
+    if is_mentions_topic(n) {
+        return Some("mentions");
+    }
+    if is_politics_figure_slug(n) {
+        return Some("politics");
     }
     // 「地缘政治」须在「政治」之前：避免 `geopolitics` 命中 `politic` 子串
     if is_geopolitics_cluster(n) {
@@ -281,7 +344,16 @@ fn rollup_to_polymarket_topic(n: &str) -> Option<&'static str> {
 fn apply_topic_rollup(normalized: &str) -> String {
     rollup_to_polymarket_topic(normalized)
         .map(String::from)
-        .unwrap_or_else(|| normalized.to_string())
+        .unwrap_or_else(|| "other".to_string())
+}
+
+/// 将任意历史桶名（含 DB 缓存里的叶子 slug）规范为**有限顶层集合**，避免 UI 出现 `khamenei`、`keir` 等细标签。
+pub fn canonicalize_bucket_name(raw: &str) -> String {
+    let n = normalize_bucket_key(raw);
+    if n.is_empty() {
+        return "other".to_string();
+    }
+    apply_topic_rollup(&n)
 }
 
 impl GammaTaxonomy {
@@ -475,5 +547,28 @@ mod tests {
         let tags = vec![json!({"label": "Bitcoin", "id": "x"})];
         let b = t.distribution_bucket(None, &tags, "z");
         assert_eq!(b, "crypto");
+    }
+
+    #[test]
+    fn khamenei_slug_becomes_iran_not_raw() {
+        let t = GammaTaxonomy::empty();
+        let tags = vec![json!({"slug": "khamenei", "id": "x"})];
+        let b = t.distribution_bucket(None, &tags, "z");
+        assert_eq!(b, "iran");
+    }
+
+    #[test]
+    fn keir_slug_becomes_politics() {
+        assert_eq!(canonicalize_bucket_name("keir"), "politics");
+    }
+
+    #[test]
+    fn awards_becomes_pop_culture() {
+        assert_eq!(canonicalize_bucket_name("awards"), "pop-culture");
+    }
+
+    #[test]
+    fn random_leaf_becomes_other() {
+        assert_eq!(canonicalize_bucket_name("some-niche-tag-xyz"), "other");
     }
 }

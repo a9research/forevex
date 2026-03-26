@@ -2,6 +2,7 @@
 //! 口径说明见响应内 `notes` 与 `source` 字段。
 
 use crate::gamma_tags::normalize_slug_key;
+use crate::gamma_taxonomy::canonicalize_bucket_name;
 use crate::market_type::{classify_slug, fallback_bucket_from_title};
 use serde::Serialize;
 use serde_json::Value;
@@ -18,12 +19,14 @@ fn bucket_for_position(
         .get(&k)
         .cloned()
         .unwrap_or_else(|| classify_slug(slug).to_string());
-    if base != "unknown" {
-        return base;
-    }
-    fallback_bucket_from_title(title)
-        .map(String::from)
-        .unwrap_or(base)
+    let rough = if base != "unknown" {
+        base
+    } else {
+        fallback_bucket_from_title(title)
+            .map(String::from)
+            .unwrap_or(base)
+    };
+    canonicalize_bucket_name(&rough)
 }
 
 fn num_field(o: &serde_json::Map<String, Value>, a: &str, b: &str) -> Option<f64> {

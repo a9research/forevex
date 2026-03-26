@@ -3,7 +3,7 @@
 //! 拉标签；结果写入 `gamma_market_tags_cache`，供持仓聚合按 **primary_bucket** 分类。
 
 use crate::config::Config;
-use crate::gamma_taxonomy::GammaTaxonomy;
+use crate::gamma_taxonomy::{canonicalize_bucket_name, GammaTaxonomy};
 use crate::market_type::classify_slug;
 use crate::store::{GammaMarketTagsCacheRow, Store};
 use crate::upstream::Upstream;
@@ -148,14 +148,14 @@ pub async fn ensure_gamma_buckets_for_slugs(
         if i >= max {
             out.insert(
                 key.clone(),
-                classify_slug(raw.as_str()).to_string(),
+                canonicalize_bucket_name(&classify_slug(raw.as_str()).to_string()),
             );
             continue;
         }
 
         if let Some(row) = store.fetch_gamma_market_tags_cache(key).await? {
             if !cache_row_stale(&row, cfg) {
-                out.insert(key.clone(), row.primary_bucket.clone());
+                out.insert(key.clone(), canonicalize_bucket_name(&row.primary_bucket));
                 continue;
             }
         }
@@ -180,7 +180,7 @@ pub async fn ensure_gamma_buckets_for_slugs(
             }
             Err(e) => {
                 tracing::warn!(slug = %key, "resolve_slug_tags: {e:#}");
-                let fallback = classify_slug(raw.as_str()).to_string();
+                let fallback = canonicalize_bucket_name(&classify_slug(raw.as_str()).to_string());
                 let _ = store
                     .upsert_gamma_market_tags_cache(
                         key,
