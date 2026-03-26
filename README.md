@@ -119,6 +119,7 @@ curl -sS http://127.0.0.1:3000/health
 3. 若有 `id`，再请求官方文档中的 **[`GET /markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)**；若返回非空数组，则以该列表为准写入 `tags`（`tags_source=market_id_tags`）。
 4. **分布桶名** 由 **`GammaTaxonomy`**（与 [官网 Topics / Browse](https://polymarket.com/) 同源数据）决定：启动分析前会拉取（并 **进程内缓存** `FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC`，默认 24h）Gamma **`GET /tags`**（分页）+ **`GET /sports`**。在 **`/sports`** 登记过的 tag id 仍直接归 **`sports`**；其余类目/标签经 **`rollup_to_polymarket_topic`** 归并为顶层话题，例如：`politics`（含 *US Politics*、election 等）、`crypto`、`ai`、`tech`、`finance`、`economy`、`pop-culture`、`culture`、`geopolitics`、`weather` 等（与体育子类归 **`sports`** 同一套逻辑，避免子标签与顶层类目并列）。
 5. 仍优先 **`category`**，否则标签 **`label`/`slug`**，最后回退 **`classify_slug`** 再归并。
+6. **`market_distribution[].markets`**：每个分类桶下列出贡献持仓的 **`slug` / `title` / `notional_usd`**（按 slug 合并、金额降序，最多 50 条），供前端 hover 展示。
 
 环境变量：`FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC`（默认 7 天）、`FOREVEX_GAMMA_MAX_SLUG_ENRICH`、`FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC`。
 

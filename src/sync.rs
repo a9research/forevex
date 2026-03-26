@@ -110,21 +110,23 @@ async fn paginate_positions_open(up: &Upstream, user: &str) -> anyhow::Result<Ve
     Ok(out)
 }
 
+/// Polymarket Data API `GET /closed-positions`: `limit` **maximum is 50** (OpenAPI).
+/// 请求更大 limit 仍只会返回最多 50 条；必须用 `offset` 分页直到短页或空页，否则会只拿到第一页。
 async fn paginate_positions_closed(up: &Upstream, user: &str) -> anyhow::Result<Vec<Value>> {
-    let limit = 500u32;
+    const PAGE: u32 = 50;
     let mut offset = 0u32;
     let mut out = Vec::new();
     loop {
-        let page: Vec<Value> = up.closed_positions_page(user, limit, offset).await?;
+        let page: Vec<Value> = up.closed_positions_page(user, PAGE, offset).await?;
         if page.is_empty() {
             break;
         }
         let n = page.len() as u32;
         out.extend(page);
-        if n < limit {
+        offset = offset.saturating_add(n);
+        if n < PAGE {
             break;
         }
-        offset = offset.saturating_add(limit);
     }
     Ok(out)
 }

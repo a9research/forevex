@@ -5,6 +5,7 @@ use crate::gamma_tags::normalize_slug_key;
 use crate::market_type::classify_slug;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 fn bucket_for_slug(slug: &str, slug_to_bucket: &HashMap<String, String>) -> String {
@@ -74,6 +75,22 @@ fn slug_of(o: &serde_json::Map<String, Value>) -> &str {
     str_field(o, "slug", "slug").unwrap_or("")
 }
 
+fn title_of(o: &serde_json::Map<String, Value>) -> String {
+    let t = str_field(o, "title", "title")
+        .or_else(|| str_field(o, "question", "question"))
+        .unwrap_or("")
+        .trim();
+    if !t.is_empty() {
+        return t.to_string();
+    }
+    let s = slug_of(o);
+    if s.is_empty() {
+        "—".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 fn bucket_key(price: f64) -> &'static str {
     if price < 0.1 {
         "lt_0_1"
@@ -91,10 +108,90 @@ fn bucket_key(price: f64) -> &'static str {
 }
 
 #[derive(Serialize)]
+pub struct MarketContrib {
+    pub slug: String,
+    pub title: String,
+    pub notional_usd: f64,
+}
+
+#[derive(Serialize)]
 pub struct MarketDistRow {
     pub market_type: String,
     pub position_count: u32,
     pub notional_usd: f64,
+    /// 该分类下按 slug 汇总的盘口（hover 展示）；最多 50 条，按金额降序。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub markets: Vec<MarketContrib>,
+}
+
+#[derive(Default)]
+struct BucketAgg {
+    position_count: u32,
+    notional_usd: f64,
+    by_slug: HashMap<String, SlugAgg>,
+}
+
+struct SlugAgg {
+    title: String,
+    notional_usd: f64,
+}
+
+impl BucketAgg {
+    fn add(&mut self, slug: &str, title: &str, ev: f64) {
+        self.position_count += 1;
+        self.notional_usd += ev;
+        let key = if slug.is_empty() {
+            "__no_slug__".to_string()
+        } else {
+            slug.to_string()
+        };
+        match self.by_slug.entry(key) {
+            Entry::Occupied(mut e) => {
+                let a = e.get_mut();
+                a.notional_usd += ev;
+                if (a.title.is_empty() || a.title == "—") && !title.is_empty() && title != "—" {
+                    a.title = title.to_string();
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(SlugAgg {
+                    title: if title.is_empty() {
+                        "—".to_string()
+                    } else {
+                        title.to_string()
+                    },
+                    notional_usd: ev,
+                });
+            }
+        }
+    }
+
+    fn into_dist_row(self, market_type: String) -> MarketDistRow {
+        const MAX_MARKETS: usize = 50;
+        let mut markets: Vec<MarketContrib> = self
+            .by_slug
+            .into_iter()
+            .map(|(slug, a)| MarketContrib {
+                slug: if slug == "__no_slug__" { String::new() } else { slug },
+                title: a.title,
+                notional_usd: a.notional_usd,
+            })
+            .collect();
+        markets.sort_by(|a, b| {
+            b.notional_usd
+                .partial_cmp(&a.notional_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if markets.len() > MAX_MARKETS {
+            markets.truncate(MAX_MARKETS);
+        }
+        MarketDistRow {
+            market_type,
+            position_count: self.position_count,
+            notional_usd: self.notional_usd,
+            markets,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -149,7 +246,7 @@ pub fn compute_position_analytics(
     let notes = vec![
         "Aggregates from cached positions only (no /trades).",
         "closed_win_rate_pct: count(realizedPnl>0) / count(valid realizedPnl on closed).",
-        "market_distribution: sum(notional) by Gamma tags cache (category/tags) when available, else classify_slug(slug).",
+        "market_distribution: sum(notional) by bucket; each row includes `markets` (slug,title,notional) for hover drill-down.",
         "price_buckets_avg_price: histogram of avgPrice per position (open+closed), not per-fill.",
         "outcome_position_bias: share of position rows by outcome text (yes/no), not trade fills.",
     ];
@@ -157,7 +254,7 @@ pub fn compute_position_analytics(
     let mut closed_wins = 0_u32;
     let mut closed_with_pnl = 0_u32;
     let mut win_by_type: HashMap<String, (u32, u32)> = HashMap::new();
-    let mut dist: HashMap<String, (u32, f64)> = HashMap::new();
+    let mut dist: HashMap<String, BucketAgg> = HashMap::new();
     let mut price_buckets: HashMap<&'static str, u32> = HashMap::from([
         ("lt_0_1", 0),
         ("0_1_to_0_3", 0),
@@ -198,9 +295,8 @@ pub fn compute_position_analytics(
         let slug = slug_of(o);
         let mt = bucket_for_slug(slug, slug_to_bucket);
         let ev = effective_value_usd(o, true);
-        let e = dist.entry(mt).or_insert((0, 0.0));
-        e.0 += 1;
-        e.1 += ev;
+        let tit = title_of(o);
+        dist.entry(mt).or_default().add(slug, &tit, ev);
         let ap = avg_price(o);
         if ap > 0.0 {
             *price_buckets.entry(bucket_key(ap)).or_insert(0) += 1;
@@ -213,9 +309,8 @@ pub fn compute_position_analytics(
         let slug = slug_of(o);
         let mt = bucket_for_slug(slug, slug_to_bucket);
         let ev = effective_value_usd(o, false);
-        let e = dist.entry(mt).or_insert((0, 0.0));
-        e.0 += 1;
-        e.1 += ev;
+        let tit = title_of(o);
+        dist.entry(mt).or_default().add(slug, &tit, ev);
         let ap = avg_price(o);
         if ap > 0.0 {
             *price_buckets.entry(bucket_key(ap)).or_insert(0) += 1;
@@ -225,11 +320,7 @@ pub fn compute_position_analytics(
 
     let mut market_distribution: Vec<MarketDistRow> = dist
         .into_iter()
-        .map(|(market_type, (position_count, notional_usd))| MarketDistRow {
-            market_type,
-            position_count,
-            notional_usd,
-        })
+        .map(|(market_type, agg)| agg.into_dist_row(market_type))
         .collect();
     market_distribution.sort_by(|a, b| {
         b.notional_usd
