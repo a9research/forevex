@@ -1,151 +1,160 @@
-# forevex
+# polymarket-pipeline
 
-独立 Rust 服务：从 Polymarket 官方 HTTP API 拉取**用户资料 / 指标 / 持仓 / 市场 activity**，写入 **PostgreSQL**，并提供 **CLI** 与 **HTTP API**。位于本仓库子目录 **`account-analyzer/forevex/`**（相对 monorepo 根：`Forevex/account-analyzer/forevex`），**保留独立 `.git`**（嵌套仓库）。
+Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见绿场文档 P4）：**Gamma markets** → **类目补全** → **Goldsky `orderFilledEvents`（含 sticky `timestamp` + `id_gt` 分页）** → **加工写入 `fact_trades`** → **钱包维表** → **Data API activity（可选）** → **官方 API 快照（可选）** → **聚合表**，表结构与流程对齐 [poly_data](https://github.com/warproxxx/poly_data) 与文档：
 
-> 上游为非保证稳定的公开接口；字段以实时 JSON 为准。Rust 官方客户端见 [Polymarket Clients & SDKs](https://docs.polymarket.com/api-reference/clients-sdks)。
+- [`docs/polymarket-data-platform-unified.md`](../docs/polymarket-data-platform-unified.md)
+- [`docs/polymarket-analytics-mvp-data-bus.md`](../docs/polymarket-analytics-mvp-data-bus.md)
+- [`docs/polymarket-pipeline-rust-greenfield-plan.md`](../docs/polymarket-pipeline-rust-greenfield-plan.md)
 
-## 快速开始
+## 依赖
+
+- Rust 2021
+- PostgreSQL（`DATABASE_URL`）
+
+## 配置
+
+复制 `.env.example` 为 `.env`，设置 `DATABASE_URL`。
+
+| 变量 | 说明 |
+|------|------|
+| `DATABASE_URL` / `PIPELINE_DATABASE_URL` | Postgres 连接串 |
+| `PIPELINE_GAMMA_ORIGIN` | 默认 `https://gamma-api.polymarket.com` |
+| `PIPELINE_DATA_API_ORIGIN` | 默认 `https://data-api.polymarket.com` |
+| `PIPELINE_GOLDSKY_GRAPHQL_URL` | Goldsky GraphQL 端点（与 poly_data 默认一致） |
+| `PIPELINE_MARKETS_BATCH_SIZE` | 默认 `500` |
+| `PIPELINE_HTTP_TIMEOUT_SEC` | 默认 `120` |
+| `PIPELINE_RATE_LIMIT_MS` | Gamma enrich / snapshot / activity 间隔（毫秒），默认 `120` |
+| `PIPELINE_ACTIVITY_PROXIES` | 逗号分隔 `0x…`，`ingest-activities` 拉 `/activity` |
+| `PIPELINE_SNAPSHOT_PROXIES` | 逗号分隔；为空则对 `dim_wallets` 最近活跃取 `PIPELINE_SNAPSHOT_MAX_WALLETS` 条 |
+| `PIPELINE_SNAPSHOT_MAX_WALLETS` | 默认 `200` |
+| `PIPELINE_USER_STATS_URL` | 默认 `https://data-api.polymarket.com/v1/user-stats` |
+| `PIPELINE_USER_PNL_URL` | 默认 `https://user-pnl-api.polymarket.com/user-pnl` |
+| `PIPELINE_GAMMA_PUBLIC_PROFILE_URL` | 默认 `https://gamma-api.polymarket.com/public-profile` |
+| `PIPELINE_HTTP_BIND` | `serve` 子命令监听地址，默认 `0.0.0.0:8080` |
+
+## 本地开发：Docker 只跑 Postgres，Rust 用 `cargo` 调试
+
+适合：**数据库用 Compose 固定版本/隔离**，**程序在本机 `cargo build` / `cargo run`**，改代码立刻重跑，不必每次构建镜像。
+
+1. **只启动 Postgres**（不启动 `pipeline` 容器）：
+
+```bash
+cd forevex
+docker compose up -d postgres
+```
+
+`docker compose` 会按服务名 **只拉起 `postgres`**，`pipeline` 不会启动。
+
+2. **连接串**与 `docker-compose.yml` 里一致：映射 **`127.0.0.1:5433` → 容器 5432**，用户/密码/库 **`postgres` / `postgres` / `polymarket_pipeline`**。在项目根复制环境变量：
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres
-# 等待 healthy 后：
-export DATABASE_URL=postgres://forevex:forevex@127.0.0.1:5433/forevex
+# 确认 .env 中 DATABASE_URL 为：
+# postgres://postgres:postgres@127.0.0.1:5433/polymarket_pipeline
+```
+
+`dotenvy` 会在 `cargo run` 时自动加载当前目录下的 `.env`（在 `forevex/` 下执行命令即可）。
+
+3. **本机跑迁移与子命令**（示例）：
+
+```bash
+cargo run -- migrate
 cargo run -- serve
+# 调试日志
+RUST_LOG=debug,polymarket_pipeline=debug cargo run -- serve
 ```
 
-另一终端：
+4. **停库**（数据仍在 volume 里）：
 
 ```bash
-curl -s http://127.0.0.1:3000/health
-# 创建/同步用户（201 Created）
-curl -s -X POST http://127.0.0.1:3000/api/v1/users -H 'content-type: application/json' \
-  -d '{"input":"@YatSen"}'   # 或 0x… 地址
-curl -s http://127.0.0.1:3000/api/v1/users/0x你的proxy
-curl -s -X POST http://127.0.0.1:3000/api/v1/users/0x…/positions/sync
-curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/positions?state=open'
-# 同步某市场 activity（JSON body）
-curl -s -X POST http://127.0.0.1:3000/api/v1/users/0x…/activity \
-  -H 'content-type: application/json' -d '{"market":"<condition_id>"}'
-# 读取缓存
-curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/activity?market=<condition_id>'
-# 持仓聚合分析（需已 sync 持仓）
-curl -s 'http://127.0.0.1:3000/api/v1/users/0x…/analytics/positions'
+docker compose stop postgres
 ```
 
-### HTTP API（REST，`/api/v1`）
+5. **连库工具**（任选）：`psql postgres://postgres:postgres@127.0.0.1:5433/polymarket_pipeline`，或 DBeaver / TablePlus 等填同一连接串。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 健康检查 |
-| `GET` | `/api/v1/meta` | 元信息 |
-| `POST` | `/api/v1/users` | Body: `{"input":"@slug或0x…"}`，上游拉取并写入 DB → **201** |
-| `GET` | `/api/v1/users/{proxy}` | 用户快照 JSON（含 **`positionsSyncedAt`**：至少成功做过一次 `POST …/positions/sync` 后有 ISO 时间，否则 `null`） |
-| `GET` | `/api/v1/users/{proxy}/positions` | Query: `state=open` / `closed` |
-| `POST` | `/api/v1/users/{proxy}/positions/sync` | 从 Data API 刷新持仓 |
-| `GET` | `/api/v1/users/{proxy}/activity` | Query: `market=<condition_id>`，读缓存 |
-| `POST` | `/api/v1/users/{proxy}/activity` | Body: `{"market":"<condition_id>"}`，同步 activity |
-| `GET` | `/api/v1/users/{proxy}/analytics/positions` | 基于 **已缓存** open+closed 持仓；Market distribution 按 **Gamma** `category` + [`/markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)（见 `gamma_market_tags_cache`），再回退 slug 子串规则；另有胜率、价位桶、Yes/No；需先 `POST …/positions/sync` |
-
-错误响应：`{ "error": "…" }`，HTTP 状态码区分 400 / 404 / 502 等。
-
-全栈 Compose（含 `forevex` 镜像）：
-
-```bash
-docker compose up --build
-```
-
-默认映射：**Postgres `5433`**（避免与本机其他 PG 冲突）、**API `3000`**。
+**注意**：若本机 **5433 已被占用**，改 `docker-compose.yml` 里 `ports` 左侧端口，并同步改 `.env` 里的 `DATABASE_URL`。不要用 `host.docker.internal` 连接——那是容器内访问宿主机；本机 Rust 进程连 **`127.0.0.1:5433`** 即可。
 
 ## CLI
 
 ```bash
-forevex serve
-forevex sync user '@YatSen'
-forevex sync user 0x…
-forevex sync positions 0x…
-forevex sync activity 0x… --market <condition_id>
+cargo run -- migrate
+cargo run -- ingest-markets    # dim_markets，checkpoint: ingest_markets.offset
+cargo run -- enrich-gamma       # category_raw / topic_primary
+cargo run -- ingest-goldsky     # stg_order_filled（sticky 游标）
+cargo run -- process-trades     # fact_trades
+cargo run -- refresh-wallets    # dim_wallets
+cargo run -- ingest-activities # fact_account_activities（需 PIPELINE_ACTIVITY_PROXIES）
+cargo run -- snapshot-wallets   # wallet_api_snapshot
+cargo run -- aggregate          # agg_wallet_topic + agg_global_daily
+cargo run -- import-order-filled-snapshot /path/to/orderFilled_complete.csv.xz  # poly_data 历史快照 → stg_order_filled
+cargo run -- run-all            # migrate + 上述顺序（不含 serve）
+cargo run -- serve              # GET /health、GET /stats（需 DB）
 ```
 
-## 配置
-
-| 变量 | 说明 |
-|------|------|
-| `DATABASE_URL` / `FOREVEX_DATABASE_URL` | Postgres 连接串 |
-| `FOREVEX_BIND` | 监听地址，默认 `0.0.0.0:3000` |
-| `FOREVEX_PUBLIC_BASE_URL` | 对外域名/基址（元信息、文档用） |
-| `FOREVEX_*_ORIGIN` / `FOREVEX_USER_STATS_URL` / `FOREVEX_USER_PNL_URL` | 上游 base |
-
-启动时会自动执行 `migrations/`。v0.1 **无鉴权**；生产环境建议反代 + 后续再加 API Key/JWT。
-
-## 数据模型（分层）
-
-1. **`wallet_user_snapshot`**：`proxy` 主键；Gamma `public-profile`、Data `value` / `traded`、`v1/user-stats`、`user-pnl` 系列 JSON；**`positions_synced_at`** 在每次成功 `positions/sync` 后更新，用于客户端区分「从未拉过持仓」与「已拉过但 0 仓」。
-2. **`positions`**：`open` / `closed`，每行 `position_key` + `raw` JSON。
-3. **`market_activity_cache`**：按 `(proxy, market_condition_id)` 存 activity 数组。
-
-`@slug` 解析：请求 Gamma `GET /public-profile?username=`（无 `@` 前缀），读取 `proxyWallet` 作为后续 Data API 的 `user`。
-
-## 与 polymarket-account-analyzer 的区别
-
-| 服务 | 典型 HTTP 路由 | 用途 |
-|------|----------------|------|
-| **forevex**（本目录） | `/health`、`/api/v1/users/...` 等 | 官方 API 同步进 Postgres，REST 读库 |
-| **polymarket-account-analyzer** | `GET /analyze/:wallet`、`GET /position-activity/:wallet?market=` 等 | 深度分析报告、KPI、策略推断、PG 报告缓存 |
-
-前端建议：**只连 forevex** 时**不要设置** **`NEXT_PUBLIC_API_BASE_URL`**（则不请求 `GET /analyze`），并配置 **`NEXT_PUBLIC_FOREVEX_URL`** 或 **`NEXT_PUBLIC_FOREVEX_USE_PROXY` + `FOREVEX_UPSTREAM_URL`**。若与分析器并行部署，再设置 **`NEXT_PUBLIC_API_BASE_URL`** 指向分析器；**`NEXT_PUBLIC_SKIP_ANALYZE=1`** 在已配基址时仅跳过拉报告。把 API 基址误指到 forevex 会得到 **`GET /analyze` 404**。
-
-### 部署后仍见 `POST /api/v1/users` → 404？
-
-**最常见原因：公网 `:3000` 上跑的不是 forevex，而是 polymarket-account-analyzer**（两者 compose 默认都映射 `3000`）。分析器没有 `/api/v1/...`，故统一 **404**。
-
-在**服务器本机**执行（把 `127.0.0.1` 换成你实际监听地址）：
+## 验证
 
 ```bash
-curl -sS http://127.0.0.1:3000/health
+cd forevex && cargo build && cargo test
 ```
 
-- **forevex**：响应为 **JSON**，形如 `{"ok":true,"service":"forevex"}`；且 `curl -sS http://127.0.0.1:3000/api/v1/meta` 应返回带 `apiVersion` 的 JSON。
-- **polymarket-account-analyzer**：`/health` 为纯文本 **`ok`**（无 JSON）；无 `/api/v1/meta`。
+端到端需有效 `DATABASE_URL` 与外网；`run-all` 会调用官方与 Goldsky HTTP。
 
-处理：二选一占用 `3000`，或把 forevex 改绑 **`3001`**（改 `FOREVEX_BIND` + compose `ports` + 前端 `NEXT_PUBLIC_FOREVEX_URL`）。更新镜像后建议 **`docker compose build --no-cache`** 再 **`up -d`**，避免旧层缓存。
+## poly_data 历史快照（Quick Download）
 
-## Market distribution：Gamma 标签（不再整屏 `unknown`）
+poly_data 提供 **完整历史 `orderFilled` CSV**（xz 压缩），可与本管线 **`stg_order_filled`** 对齐：
 
-`GET /api/v1/users/:proxy/analytics/positions` 在聚合前会按持仓里的 **`slug`** 去重，并对每个 slug（上限见 `FOREVEX_GAMMA_MAX_SLUG_ENRICH`，默认 **500**）：
+- **下载**（示例）：[orderFilled_complete.csv.xz](https://polydata-archive.s3.us-east-1.amazonaws.com/orderFilled_complete.csv.xz)  
+  文件名：`orderFilled_complete.csv.xz`
 
-1. 读 **`gamma_market_tags_cache`**（命中且未过期则跳过网络）。
-2. 否则请求 Gamma **`GET /markets/slug/{slug}?include_tag=true`**，取 `id`、`category`、内嵌 `tags`。
-3. 若有 `id`，再请求官方文档中的 **[`GET /markets/{id}/tags`](https://docs.polymarket.com/api-reference/markets/get-market-tags-by-id)**；若返回非空数组，则以该列表为准写入 `tags`（`tags_source=market_id_tags`）。
-4. **分布桶名** 由 **`GammaTaxonomy`**（与 [官网 Topics / Browse](https://polymarket.com/) 同源数据）决定：启动分析前会拉取（并 **进程内缓存** `FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC`，默认 24h）Gamma **`GET /tags`**（分页）+ **`GET /sports`**。在 **`/sports`** 登记过的 tag id 仍直接归 **`sports`**；其余类目/标签经 **`rollup_to_polymarket_topic`** 归并为顶层话题，例如：`politics`（含 *US Politics*、election 等）、`crypto`、`ai`、`tech`、`finance`、`economy`、`pop-culture`、`culture`、`geopolitics`、`weather` 等（与体育子类归 **`sports`** 同一套逻辑，避免子标签与顶层类目并列）。
-5. 仍优先 **`category`**，否则标签 **`label`/`slug`**，最后回退 **`classify_slug`** 再归并。
-6. **`market_distribution[].markets`**：每个分类桶下列出贡献持仓的 **`slug` / `title` / `notional_usd`**（按 slug 合并、金额降序，最多 50 条），供前端 hover 展示。
-
-环境变量：`FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC`（默认 7 天）、`FOREVEX_GAMMA_MAX_SLUG_ENRICH`、`FOREVEX_GAMMA_TAXONOMY_CACHE_TTL_SEC`。
-
-升级本逻辑后若仍看到旧桶名，可缩短 `FOREVEX_GAMMA_TAGS_CACHE_TTL_SEC` 或 **`TRUNCATE gamma_market_tags_cache;`** 强制重算。
-
-### 清空数据库中的业务数据（开发/重置）
-
-可执行仓库内脚本（**不删** `_sqlx_migrations`，无需重跑 migration）：
+**导入**（写入 `stg_order_filled`，与 Goldsky 增量游标共用唯一约束；重复行自动跳过）：
 
 ```bash
-# 本机 psql（DATABASE_URL 与 forevex 使用的一致）
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/reset-local-data.sql
+# 本地：直接指向下载文件（支持 .csv 或 .csv.xz）
+cargo run --release -- import-order-filled-snapshot /path/to/orderFilled_complete.csv.xz
 ```
 
-会清空：`wallet_user_snapshot`（并 `CASCADE` 清空 `positions`、`market_activity_cache`）、`gamma_market_tags_cache`。
+导入结束后，默认会把 **`etl_checkpoint`** 里 **`goldsky_order_filled`** 的游标设为当前表中 **最大 `timestamp_i64`**，这样后续 **`ingest-goldsky`** 只从该时间戳之后增量拉取。若不想改游标（仅做离线装载测试）：
 
-**生产环境**务必先备份再执行；清空后需对用户重新 `POST /api/v1/users` 与 `POST …/positions/sync` 才会再有数据。
+```bash
+cargo run --release -- import-order-filled-snapshot /path/to/orderFilled_complete.csv.xz --no-update-checkpoint
+```
 
-## 存储：`jsonb` vs 强类型列
+**已解压的 CSV** 或 **管道**（stdin 仅支持**明文 CSV**，不支持 xz 流）：
 
-当前实现以 **`jsonb` + 少量键列**（`proxy`、`state`、`position_key`、`market`）为主；另见表 **`gamma_market_tags_cache`**（按 **slug** 缓存 Gamma 类目与标签 JSON）。
+```bash
+xzcat orderFilled_complete.csv.xz | cargo run --release -- import-order-filled-snapshot -
+```
 
-- **仅 jsonb**：上线快，上游加字段自动保留；查询/索引要靠 PostgreSQL JSON 算子，Rust 侧少结构保证。
-- **强类型列**：每个字段对应 SQL 类型，迁移与编译期校验强，上游一变就要改代码和 migration。
-- **推荐折中**（后续迭代）：高频筛选字段（如 `condition_id`、`asset`）抽列 + 全量 `payload jsonb` 保留原文。
+导入后请按需继续：**`process-trades`**（→ `fact_trades`）及下游 **`refresh-wallets` / `aggregate`** 等（与 `run-all` 中顺序一致）。
 
-## License
+**Docker**（把文件放到例如 `./data/orderFilled_complete.csv.xz`）：
 
-MIT OR Apache-2.0
+```bash
+docker compose run --rm -v "$(pwd)/data:/data:ro" pipeline import-order-filled-snapshot /data/orderFilled_complete.csv.xz
+```
+
+## Docker Compose
+
+在 **`forevex/`** 目录（本 crate 根）使用 **`docker-compose.yml`**：
+
+```bash
+cd forevex
+docker compose up -d --build
+```
+
+- **Postgres**：宿主机 **`127.0.0.1:5433`** → 容器内 `5432`，库名 **`polymarket_pipeline`**（用户/密码见 compose 文件，生产请修改）。
+- **pipeline 默认命令**：镜像入口会先执行 **`migrate`**，再启动 **`serve`**，HTTP **`127.0.0.1:8080`**（`GET /health`、`GET /stats`）。
+- **一次性全量同步**（需外网，耗时可能较长）：
+
+```bash
+docker compose run --rm pipeline run-all
+```
+
+- **仅执行迁移**：`docker compose run --rm pipeline migrate`（与启动时的 migrate 等价，可单独调试）。
+
+可在 `docker-compose.yml` 的 `pipeline.environment` 中追加 `PIPELINE_*`（或挂载 env 文件），与 `.env.example` 一致。
+
+## 与 poly_data 的差异（已知）
+
+- **Parquet / 文件导出**：未实现；数据仅存 Postgres。
+- **ingest-markets 游标**：使用 `etl_checkpoint` 的 `offset`，与 poly_data「从 CSV 尾部恢复」等价语义不同，但可断点续跑。

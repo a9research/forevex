@@ -1,31 +1,53 @@
+# polymarket-pipeline + PostgreSQL
+#
+# 本地开发：只跑数据库、Rust 用 cargo（见 README「本地开发」）：
+#   docker compose up -d postgres
+#
+# 全栈容器（Postgres + pipeline 镜像）：
+#   docker compose up -d --build
+#
+# 默认：Postgres(5433→容器5432) + pipeline 执行 migrate 后 **serve**（8080：/health、/stats）
+#
+# 一次性跑全量管线（需外网）：
+#   docker compose run --rm pipeline run-all
+#
+# 仅迁移：
+#   docker compose run --rm pipeline migrate
+#
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: forevex
-      POSTGRES_PASSWORD: forevex
-      POSTGRES_DB: forevex
-    ports:
-      - "5433:5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: polymarket_pipeline
     volumes:
-      - forevex_pg:/var/lib/postgresql/data
+      - pipeline_pgdata:/var/lib/postgresql/data
+    ports:
+      # 避免与宿主机已有 5432 冲突；容器内仍为 5432
+      - "127.0.0.1:5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U forevex -d forevex"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d polymarket_pipeline"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
 
-  forevex:
-    build: .
-    ports:
-      - "3000:3000"
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgres://forevex:forevex@postgres:5432/forevex
-      FOREVEX_BIND: 0.0.0.0:3000
-      FOREVEX_PUBLIC_BASE_URL: http://localhost:3000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/polymarket_pipeline
+      RUST_LOG: ${RUST_LOG:-info}
+      PIPELINE_HTTP_BIND: "0.0.0.0:8080"
+    ports:
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
-  forevex_pg:
+  pipeline_pgdata:

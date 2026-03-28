@@ -1,13 +1,17 @@
+//! CLI: `polymarket-pipeline` — ingest & process (see docs/polymarket-data-platform-unified.md).
+
 use clap::{Parser, Subcommand};
-use forevex::api::{router, AppState};
-use forevex::config::Config;
-use forevex::store::Store;
-use forevex::sync;
-use forevex::upstream::Upstream;
-use std::sync::Arc;
+use polymarket_pipeline::{
+    aggregate, config::Config, db, enrich_gamma, goldsky, http_server, import_order_filled_snapshot,
+    ingest_activities, ingest_markets, process_trades, refresh_wallets, snapshot_wallets,
+};
+use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "forevex", about = "Polymarket user/positions/activity sync (CLI + API)")]
+#[command(
+    name = "polymarket-pipeline",
+    about = "Polymarket data pipeline (Gamma + Goldsky + process + aggregates)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -15,31 +19,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run HTTP API (migrations applied on startup).
+    /// Apply SQL migrations (`migrations/`)
+    Migrate,
+    /// Fetch Gamma markets into `dim_markets`
+    IngestMarkets,
+    /// Fill `category_raw` / `topic_primary` via Gamma `GET /markets/{id}`
+    EnrichGamma,
+    /// Fetch Goldsky `orderFilledEvents` into `stg_order_filled`
+    IngestGoldsky,
+    /// Build `fact_trades` from staging + `dim_markets`
+    ProcessTrades,
+    /// Rebuild `dim_wallets` from `fact_trades`
+    RefreshWallets,
+    /// Data API activity → `fact_account_activities` (PIPELINE_ACTIVITY_PROXIES)
+    IngestActivities,
+    /// user-stats / user-pnl / public-profile → `wallet_api_snapshot`
+    SnapshotWallets,
+    /// Rebuild `agg_wallet_topic` + `agg_global_daily`
+    Aggregate,
+    /// Migrate + full pipeline (Postgres only; no Parquet)
+    RunAll,
+    /// Read-only HTTP (`PIPELINE_HTTP_BIND`): `/health`, `/stats`
     Serve,
-    /// Pull upstream and write to Postgres.
-    Sync {
-        #[command(subcommand)]
-        cmd: SyncCmd,
-    },
-}
-
-#[derive(Subcommand)]
-enum SyncCmd {
-    /// Resolve @slug or 0x…, then fetch profile + value + traded + user-stats + user-pnl.
-    User {
-        /// Wallet `0x…` or `@username` / `username`.
-        input: String,
-    },
-    /// Fetch open + closed positions (Data API).
-    Positions {
-        proxy: String,
-    },
-    /// Fetch `/activity` for one market (condition id).
-    Activity {
-        proxy: String,
+    /// Import poly_data `orderFilled_complete.csv` / `.xz` → `stg_order_filled` (updates Goldsky checkpoint)
+    ImportOrderFilledSnapshot {
+        /// Path to `.csv`, `.csv.xz`, or `-` for stdin (plain CSV, not xz)
+        path: PathBuf,
+        #[arg(long, default_value_t = 2000)]
+        batch_size: usize,
+        /// Do not write `etl_checkpoint` for `goldsky_order_filled` after import
         #[arg(long)]
-        market: String,
+        no_update_checkpoint: bool,
     },
 }
 
@@ -54,36 +64,65 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let cfg = Config::from_env()?;
-    let store = Store::connect(&cfg.database_url).await?;
-    store.run_migrations().await?;
-    let upstream = Upstream::new(cfg.clone())?;
+    let pool = db::connect(&cfg.database_url).await?;
 
     match cli.command {
-        Command::Serve => {
-            let state = Arc::new(AppState {
-                store: store.clone(),
-                upstream,
-                config: cfg.clone(),
-            });
-            let app = router(state);
-            let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
-            tracing::info!("listening on {}", cfg.bind);
-            axum::serve(listener, app).await?;
+        Command::Migrate => {
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            tracing::info!("migrations applied");
         }
-        Command::Sync { cmd } => match cmd {
-            SyncCmd::User { input } => {
-                let v = sync::sync_user(&store, &upstream, &input).await?;
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            }
-            SyncCmd::Positions { proxy } => {
-                let v = sync::sync_positions(&store, &upstream, &proxy).await?;
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            }
-            SyncCmd::Activity { proxy, market } => {
-                let v = sync::sync_activity(&store, &upstream, &proxy, &market).await?;
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            }
-        },
+        Command::IngestMarkets => {
+            ingest_markets::run(&pool, &cfg).await?;
+        }
+        Command::EnrichGamma => {
+            enrich_gamma::run(&pool, &cfg).await?;
+        }
+        Command::IngestGoldsky => {
+            goldsky::run(&pool, &cfg).await?;
+        }
+        Command::ProcessTrades => {
+            process_trades::run(&pool, &cfg).await?;
+        }
+        Command::RefreshWallets => {
+            refresh_wallets::run(&pool).await?;
+        }
+        Command::IngestActivities => {
+            ingest_activities::run(&pool, &cfg).await?;
+        }
+        Command::SnapshotWallets => {
+            snapshot_wallets::run(&pool, &cfg).await?;
+        }
+        Command::Aggregate => {
+            aggregate::run(&pool).await?;
+        }
+        Command::RunAll => {
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            ingest_markets::run(&pool, &cfg).await?;
+            enrich_gamma::run(&pool, &cfg).await?;
+            goldsky::run(&pool, &cfg).await?;
+            process_trades::run(&pool, &cfg).await?;
+            refresh_wallets::run(&pool).await?;
+            ingest_activities::run(&pool, &cfg).await?;
+            snapshot_wallets::run(&pool, &cfg).await?;
+            aggregate::run(&pool).await?;
+            tracing::info!("run-all completed");
+        }
+        Command::Serve => {
+            http_server::run_http(&cfg, pool).await?;
+        }
+        Command::ImportOrderFilledSnapshot {
+            path,
+            batch_size,
+            no_update_checkpoint,
+        } => {
+            import_order_filled_snapshot::run(
+                &pool,
+                path.as_path(),
+                batch_size,
+                !no_update_checkpoint,
+            )
+            .await?;
+        }
     }
 
     Ok(())

@@ -1,4 +1,29 @@
-/target
+# Rust
+/target/
+**/*.rs.bk
+
+# Cargo：本 crate 为可执行应用，**保留** `Cargo.lock` 入库；勿忽略。
+
+# 环境变量（示例文件保留）
 .env
-.env.local
+.env.*
+!.env.example
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.code-workspace
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 证书与密钥
 *.pem
+*.key
+
+# 日志与调试
+*.log
+
+# 本地大数据 / 挂载目录（如 poly_data `orderFilled_complete.csv.xz`、compose bind-mount）
+/data/
