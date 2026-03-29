@@ -76,6 +76,8 @@ docker compose stop postgres
 
 **注意**：若本机 **5433 已被占用**，改 `docker-compose.yml` 里 `ports` 左侧端口，并同步改 `.env` 里的 `DATABASE_URL`。不要用 `host.docker.internal` 连接——那是容器内访问宿主机；本机 Rust 进程连 **`127.0.0.1:5433`** 即可。
 
+**`max_connections`（Compose）**：`docker-compose.yml` 里 `postgres` 服务使用 `command: ["postgres", "-c", "max_connections=150"]` 覆盖服务端上限（官方镜像**没有**对应环境变量）。改数字后执行 `docker compose up -d postgres` 使配置生效。独立安装的 PostgreSQL 请在 `postgresql.conf` 或 `ALTER SYSTEM` 中设置。
+
 ## CLI
 
 ```bash

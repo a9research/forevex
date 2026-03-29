@@ -17,6 +17,8 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # 服务端最大连接数（默认镜像内多为 100）；与 PIPELINE_DB_MAX_CONNECTIONS、其它客户端留余量
+    command: ["postgres", "-c", "max_connections=150"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
