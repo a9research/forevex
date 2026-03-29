@@ -69,11 +69,11 @@ async fn upsert_one_market(pool: &PgPool, market: &Value) -> anyhow::Result<bool
     }
 
     let outcomes: Vec<String> = parse_json_array_field(market.get("outcomes"));
-    let answer1 = outcomes.get(0).cloned().unwrap_or_default();
+    let answer1 = outcomes.first().cloned().unwrap_or_default();
     let answer2 = outcomes.get(1).cloned().unwrap_or_default();
 
     let clob: Vec<String> = parse_json_array_field(market.get("clobTokenIds"));
-    let token1 = clob.get(0).cloned().unwrap_or_default();
+    let token1 = clob.first().cloned().unwrap_or_default();
     let token2 = clob.get(1).cloned().unwrap_or_default();
 
     let neg_risk = market

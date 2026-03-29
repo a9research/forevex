@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -9,7 +10,6 @@ pub struct Config {
     pub db_acquire_timeout: Duration,
     pub gamma_origin: String,
     pub data_api_origin: String,
-    pub goldsky_graphql_url: String,
     pub http_timeout: Duration,
     pub markets_batch_size: u32,
     /// Delay between outbound HTTP calls (Gamma enrich, snapshots, activity).
@@ -24,6 +24,24 @@ pub struct Config {
     pub gamma_profile_path: String,
     /// `polymarket-pipeline serve` bind address.
     pub http_bind: String,
+
+    /// 含 `polymarket/trades`、`polymarket/blocks` 的目录（**仅作解压/增量暂存**，以对象存储为准）。
+    pub pma_data_dir: PathBuf,
+    /// `bootstrap-data` 默认下载地址（PMA 预置包）。
+    pub bootstrap_download_url: String,
+    /// 未配置对象存储时，允许仅从本地 Parquet 入库（开发用）。
+    pub pma_allow_local_only: bool,
+
+    /// S3 兼容对象存储（阿里云 OSS / MinIO / R2 等）。配置后 **PMA 以 OSS 为唯一 raw 源**。
+    pub s3_bucket: Option<String>,
+    pub s3_region: Option<String>,
+    pub s3_endpoint: Option<String>,
+    /// 对象键前缀（如 `prod`，则键为 `prod/polymarket/trades/...`）。
+    pub s3_prefix: Option<String>,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
+    /// 虚拟主机样式（如 `https://bucket.oss-cn-hangzhou.aliyuncs.com`）。阿里云部分场景需 `true`。
+    pub s3_virtual_hosted: bool,
 }
 
 impl Config {
@@ -50,10 +68,6 @@ impl Config {
             .unwrap_or_else(|_| "https://data-api.polymarket.com".to_string())
             .trim_end_matches('/')
             .to_string();
-        let goldsky_graphql_url = std::env::var("PIPELINE_GOLDSKY_GRAPHQL_URL").unwrap_or_else(|_| {
-            "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"
-                .to_string()
-        });
         let timeout_sec: u64 = std::env::var("PIPELINE_HTTP_TIMEOUT_SEC")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -89,16 +103,58 @@ impl Config {
 
         let http_bind = std::env::var("PIPELINE_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
 
+        let pma_data_dir = std::env::var("PIPELINE_PMA_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("data"));
+
+        let bootstrap_download_url = std::env::var("PIPELINE_BOOTSTRAP_DOWNLOAD_URL")
+            .unwrap_or_else(|_| "https://s3.jbecker.dev/data.tar.zst".to_string());
+
+        let pma_allow_local_only = env_truthy(std::env::var("PIPELINE_PMA_ALLOW_LOCAL_ONLY").ok());
+
+        // 阿里云 OSS：可用 PIPELINE_OSS_*；与 PIPELINE_S3_* 等价（后者为通用别名）
+        let s3_bucket = nonempty_opt(
+            std::env::var("PIPELINE_OSS_BUCKET")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_S3_BUCKET").ok()),
+        );
+        let s3_region = nonempty_opt(
+            std::env::var("PIPELINE_OSS_REGION")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_S3_REGION").ok()),
+        );
+        let s3_endpoint = nonempty_opt(
+            std::env::var("PIPELINE_OSS_ENDPOINT")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_S3_ENDPOINT").ok()),
+        );
+        let s3_prefix = nonempty_opt(std::env::var("PIPELINE_S3_PREFIX").ok());
+        let s3_access_key_id = nonempty_opt(
+            std::env::var("PIPELINE_OSS_ACCESS_KEY_ID")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_S3_ACCESS_KEY_ID").ok()),
+        );
+        let s3_secret_access_key = nonempty_opt(
+            std::env::var("PIPELINE_OSS_ACCESS_KEY_SECRET")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_OSS_SECRET_ACCESS_KEY").ok())
+                .or_else(|| std::env::var("PIPELINE_S3_SECRET_ACCESS_KEY").ok()),
+        );
+        let s3_virtual_hosted = env_truthy(
+            std::env::var("PIPELINE_OSS_VIRTUAL_HOSTED")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_S3_VIRTUAL_HOSTED").ok()),
+        );
+
         Ok(Self {
             database_url,
             db_max_connections,
             db_acquire_timeout: Duration::from_secs(db_acquire_timeout_sec),
             gamma_origin,
             data_api_origin,
-            goldsky_graphql_url,
             http_timeout: Duration::from_secs(timeout_sec.max(10)),
             markets_batch_size: markets_batch_size.max(1),
-            rate_limit_ms: rate_limit_ms.max(0),
+            rate_limit_ms,
             activity_proxies,
             snapshot_proxies,
             snapshot_max_wallets: snapshot_max_wallets.max(1),
@@ -106,8 +162,32 @@ impl Config {
             user_pnl_origin,
             gamma_profile_path,
             http_bind,
+            pma_data_dir,
+            bootstrap_download_url,
+            pma_allow_local_only,
+            s3_bucket,
+            s3_region,
+            s3_endpoint,
+            s3_prefix,
+            s3_access_key_id,
+            s3_secret_access_key,
+            s3_virtual_hosted,
         })
     }
+}
+
+fn env_truthy(s: Option<String>) -> bool {
+    match s {
+        None => false,
+        Some(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        }
+    }
+}
+
+fn nonempty_opt(s: Option<String>) -> Option<String> {
+    s.filter(|x| !x.trim().is_empty())
 }
 
 fn parse_csv_list(s: String) -> Vec<String> {

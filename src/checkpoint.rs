@@ -3,9 +3,6 @@
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
-/// `ingest-goldsky` / `import-order-filled-snapshot` 共用游标键。
-pub const PIPELINE_GOLDSKY_ORDER_FILLED: &str = "goldsky_order_filled";
-
 pub async fn load(pool: &PgPool, pipeline: &str) -> anyhow::Result<Option<Value>> {
     let row: Option<(Value,)> =
         sqlx::query_as("SELECT cursor_json FROM etl_checkpoint WHERE pipeline = $1")

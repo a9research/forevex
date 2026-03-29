@@ -2,7 +2,7 @@
 name = "polymarket-pipeline"
 version = "0.1.0"
 edition = "2021"
-description = "Polymarket data pipeline: Gamma markets, Goldsky order-filled, processed trades (aligned with poly_data)"
+description = "Polymarket data pipeline: Gamma markets, PMA Parquet (OSS raw), processed trades"
 license = "MIT OR Apache-2.0"
 default-run = "polymarket-pipeline"
 
@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", features = [
@@ -33,5 +33,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rust_decimal = { version = "1", features = ["serde"] }
 urlencoding = "2"
 axum = "0.7"
-csv = "1"
-xz2 = "0.1"
+# PMA Parquet + optional S3-compatible object storage (see docs/polymarket-data-platform-unified.md)
+parquet = { version = "53", default-features = false, features = ["arrow", "snap"] }
+arrow = { version = "53", default-features = false }
+arrow-array = "53"
+arrow-schema = "53"
+object_store = { version = "0.11", features = ["aws"] }
+zstd = "0.13"
+tar = "0.4"
+walkdir = "2"
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+url = "2"

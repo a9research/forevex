@@ -2,16 +2,15 @@
 
 use clap::{Parser, Subcommand};
 use polymarket_pipeline::{
-    aggregate, config::Config, db, enrich_gamma, goldsky, http_server, import_order_filled_snapshot,
-    ingest_activities, ingest_markets, process_trades, refresh_wallets, snapshot_wallets,
+    aggregate, bootstrap, config::Config, db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma,
+    process_trades, refresh_wallets, snapshot_wallets,
 };
 use sqlx::PgPool;
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "polymarket-pipeline",
-    about = "Polymarket data pipeline (Gamma + Goldsky + process + aggregates)"
+    about = "Polymarket data pipeline (Gamma + PMA Parquet + process + aggregates)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,8 +25,8 @@ enum Command {
     IngestMarkets,
     /// Fill `category_raw` / `topic_primary` via Gamma `GET /markets/{id}`
     EnrichGamma,
-    /// Fetch Goldsky `orderFilledEvents` into `stg_order_filled`
-    IngestGoldsky,
+    /// PMA Parquet：对象存储为 raw 源（本地仅暂存，上传后删除）→ `stg_order_filled`
+    IngestPma,
     /// Build `fact_trades` from staging + `dim_markets`
     ProcessTrades,
     /// Rebuild `dim_wallets` from `fact_trades`
@@ -40,19 +39,21 @@ enum Command {
     Aggregate,
     /// Migrate + full pipeline (Postgres only; no Parquet)
     RunAll,
-    /// 增量同步：拉取最新 markets / Goldsky + process-trades → … → aggregate（**不含** migrate；日常一条命令）
+    /// 增量同步：markets → enrich → PMA → process-trades → … → aggregate（**不含** migrate）
     Sync,
     /// Read-only HTTP (`PIPELINE_HTTP_BIND`): `/health`, `/stats`
     Serve,
-    /// Import poly_data `orderFilled_complete.csv` / `.xz` → `stg_order_filled` (updates Goldsky checkpoint)
-    ImportOrderFilledSnapshot {
-        /// Path to `.csv`, `.csv.xz`, or `-` for stdin (plain CSV, not xz)
-        path: PathBuf,
-        #[arg(long, default_value_t = 2000)]
-        batch_size: usize,
-        /// Do not write `etl_checkpoint` for `goldsky_order_filled` after import
+    /// 下载 `data.tar.zst` 并解压；若已配置 OSS bucket 则上传并删除本地 `polymarket/`
+    BootstrapData {
+        /// 覆盖默认 `PIPELINE_BOOTSTRAP_DOWNLOAD_URL`
         #[arg(long)]
-        no_update_checkpoint: bool,
+        url: Option<String>,
+        /// 即使已有 `.pma_download_complete` 也重新下载解压
+        #[arg(long)]
+        force: bool,
+        /// 已配置 bucket 时仍 **不** 上传、不删本地（调试）
+        #[arg(long)]
+        no_upload: bool,
     },
 }
 
@@ -85,8 +86,8 @@ async fn main() -> anyhow::Result<()> {
         Command::EnrichGamma => {
             enrich_gamma::run(&pool, &cfg).await?;
         }
-        Command::IngestGoldsky => {
-            goldsky::run(&pool, &cfg).await?;
+        Command::IngestPma => {
+            pma::run(&pool, &cfg).await?;
         }
         Command::ProcessTrades => {
             process_trades::run(&pool, &cfg).await?;
@@ -115,16 +116,18 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => {
             http_server::run_http(&cfg, pool).await?;
         }
-        Command::ImportOrderFilledSnapshot {
-            path,
-            batch_size,
-            no_update_checkpoint,
+        Command::BootstrapData {
+            url,
+            force,
+            no_upload,
         } => {
-            import_order_filled_snapshot::run(
-                &pool,
-                path.as_path(),
-                batch_size,
-                !no_update_checkpoint,
+            bootstrap::run(
+                &cfg,
+                bootstrap::BootstrapOptions {
+                    url,
+                    force,
+                    no_upload,
+                },
             )
             .await?;
         }
@@ -133,11 +136,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 与 `run-all` 中 migrate **之后** 的步骤一致（适合 `sync` 与首次 `run-all` 复用）。
 async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
     ingest_markets::run(pool, cfg).await?;
     enrich_gamma::run(pool, cfg).await?;
-    goldsky::run(pool, cfg).await?;
+    pma::run(pool, cfg).await?;
     process_trades::run(pool, cfg).await?;
     refresh_wallets::run(pool).await?;
     ingest_activities::run(pool, cfg).await?;

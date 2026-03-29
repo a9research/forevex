@@ -25,5 +25,5 @@ Thumbs.db
 # 日志与调试
 *.log
 
-# 本地大数据 / 挂载目录（如 poly_data `orderFilled_complete.csv.xz`、compose bind-mount）
+# 本地大数据 / 挂载目录（compose bind-mount 等）
 /data/

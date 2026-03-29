@@ -1,13 +1,13 @@
 pub mod aggregate;
+pub mod bootstrap;
 pub mod checkpoint;
 pub mod config;
 pub mod db;
 pub mod enrich_gamma;
-pub mod goldsky;
 pub mod http_server;
-pub mod import_order_filled_snapshot;
 pub mod ingest_activities;
 pub mod ingest_markets;
+pub mod pma;
 pub mod process_trades;
 pub mod refresh_wallets;
 pub mod snapshot_wallets;
