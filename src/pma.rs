@@ -46,6 +46,25 @@ fn pma_root(cfg: &Config) -> PathBuf {
     cfg.pma_data_dir.clone()
 }
 
+/// 将 `oss-cn-xxx.aliyuncs.com` 这类无协议主机名规范为 `https://...`，避免 reqwest `RelativeUrlWithoutBase`。
+fn normalize_s3_endpoint(raw: &str) -> anyhow::Result<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        anyhow::bail!("PIPELINE_OSS_ENDPOINT / PIPELINE_S3_ENDPOINT is empty");
+    }
+    let with_scheme = if s.starts_with("http://") || s.starts_with("https://") {
+        s.to_string()
+    } else {
+        format!("https://{}", s.trim_start_matches('/'))
+    };
+    url::Url::parse(&with_scheme).map_err(|e| {
+        anyhow::anyhow!(
+            "invalid object store endpoint {with_scheme:?}: {e} — use e.g. https://oss-ap-northeast-1.aliyuncs.com"
+        )
+    })?;
+    Ok(with_scheme)
+}
+
 /// Build S3-compatible `ObjectStore` (阿里云 OSS、MinIO、R2 等).
 pub fn build_object_store(cfg: &Config) -> anyhow::Result<Arc<dyn ObjectStore>> {
     let bucket = cfg
@@ -60,7 +79,8 @@ pub fn build_object_store(cfg: &Config) -> anyhow::Result<Arc<dyn ObjectStore>> 
         b = b.with_virtual_hosted_style_request(true);
     }
     if let Some(ep) = &cfg.s3_endpoint {
-        b = b.with_endpoint(ep);
+        let ep = normalize_s3_endpoint(ep)?;
+        b = b.with_endpoint(&ep);
         if ep.starts_with("http://") {
             b = b.with_allow_http(true);
         }
