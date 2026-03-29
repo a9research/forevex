@@ -18,6 +18,8 @@ Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见绿场文档
 | 变量 | 说明 |
 |------|------|
 | `DATABASE_URL` / `PIPELINE_DATABASE_URL` | Postgres 连接串 |
+| `PIPELINE_DB_MAX_CONNECTIONS` | sqlx 池最大连接数，默认 `16`（曾硬编码为 5，大导入易 `pool timed out`） |
+| `PIPELINE_DB_ACQUIRE_TIMEOUT_SEC` | 等待池里空闲连接的最长时间（秒），默认 `120` |
 | `PIPELINE_GAMMA_ORIGIN` | 默认 `https://gamma-api.polymarket.com` |
 | `PIPELINE_DATA_API_ORIGIN` | 默认 `https://data-api.polymarket.com` |
 | `PIPELINE_GOLDSKY_GRAPHQL_URL` | Goldsky GraphQL 端点（与 poly_data 默认一致） |
@@ -87,9 +89,59 @@ cargo run -- ingest-activities # fact_account_activities（需 PIPELINE_ACTIVITY
 cargo run -- snapshot-wallets   # wallet_api_snapshot
 cargo run -- aggregate          # agg_wallet_topic + agg_global_daily
 cargo run -- import-order-filled-snapshot /path/to/orderFilled_complete.csv.xz  # poly_data 历史快照 → stg_order_filled
-cargo run -- run-all            # migrate + 上述顺序（不含 serve）
+cargo run -- sync               # 增量拉取 + 加工 + 聚合（与 run-all 同顺序，但不含 migrate）
+cargo run -- run-all            # migrate + 与 sync 相同步骤（不含 serve）
 cargo run -- serve              # GET /health、GET /stats（需 DB）
 ```
+
+### `run-all` vs `sync`
+
+| 命令 | migrate | 后续管线 |
+|------|---------|----------|
+| **`run-all`** | ✅ 执行 | ingest-markets → enrich-gamma → ingest-goldsky → process-trades → refresh-wallets → ingest-activities → snapshot-wallets → aggregate |
+| **`sync`** | ❌ 不执行 | **同上**（首次请已跑过 `migrate` 且表已就绪） |
+
+初始化或改表结构后：先 **`migrate`**（或 **`run-all`** 一次）。之后日常/定时「拉最新 + 跑完全部下游」用一条：
+
+```bash
+cargo run -- sync
+```
+
+（若你从 poly_data 导入过历史 CSV，再跑 **`sync`** 仍会按顺序增量拉 Goldsky、重算 `fact_trades` 与聚合等。）
+
+## 检查库内数据
+
+**1）HTTP（需先起 `serve`）**
+
+```bash
+cargo run -- serve   # 另开终端
+curl -s http://127.0.0.1:8080/stats | jq .
+```
+
+返回各核心表的 **行数** 摘要（`dim_markets`、`stg_order_filled`、`fact_trades` 等）。
+
+**2）`psql` 看行数与样例**（连接串与 `.env` 一致）：
+
+```bash
+psql "postgres://postgres:postgres@127.0.0.1:5433/polymarket_pipeline" -c "
+SELECT 'dim_markets' AS t, COUNT(*)::bigint AS n FROM dim_markets
+UNION ALL SELECT 'stg_order_filled', COUNT(*) FROM stg_order_filled
+UNION ALL SELECT 'fact_trades', COUNT(*) FROM fact_trades
+UNION ALL SELECT 'dim_wallets', COUNT(*) FROM dim_wallets
+UNION ALL SELECT 'agg_wallet_topic', COUNT(*) FROM agg_wallet_topic
+ORDER BY 1;
+"
+```
+
+查看最近几条成交：
+
+```bash
+psql "postgres://postgres:postgres@127.0.0.1:5433/polymarket_pipeline" -c "
+SELECT ts, market_id, maker, usd_amount FROM fact_trades ORDER BY ts DESC LIMIT 5;
+"
+```
+
+**3）图形客户端**：DBeaver / TablePlus / DataGrip 等，填 **`127.0.0.1`、端口 `5433`**、库 **`polymarket_pipeline`**、用户 **`postgres`**。
 
 ## 验证
 
@@ -125,7 +177,11 @@ cargo run --release -- import-order-filled-snapshot /path/to/orderFilled_complet
 xzcat orderFilled_complete.csv.xz | cargo run --release -- import-order-filled-snapshot -
 ```
 
-导入后请按需继续：**`process-trades`**（→ `fact_trades`）及下游 **`refresh-wallets` / `aggregate`** 等（与 `run-all` 中顺序一致）。
+导入后跑一条即可对齐 **`run-all` 里 migrate 之后的全部步骤**（增量拉取 + `process-trades` → … → `aggregate`）：
+
+```bash
+cargo run -- sync
+```
 
 **Docker**（把文件放到例如 `./data/orderFilled_complete.csv.xz`）：
 

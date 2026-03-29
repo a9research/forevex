@@ -5,6 +5,7 @@ use polymarket_pipeline::{
     aggregate, config::Config, db, enrich_gamma, goldsky, http_server, import_order_filled_snapshot,
     ingest_activities, ingest_markets, process_trades, refresh_wallets, snapshot_wallets,
 };
+use sqlx::PgPool;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -39,6 +40,8 @@ enum Command {
     Aggregate,
     /// Migrate + full pipeline (Postgres only; no Parquet)
     RunAll,
+    /// 增量同步：拉取最新 markets / Goldsky + process-trades → … → aggregate（**不含** migrate；日常一条命令）
+    Sync,
     /// Read-only HTTP (`PIPELINE_HTTP_BIND`): `/health`, `/stats`
     Serve,
     /// Import poly_data `orderFilled_complete.csv` / `.xz` → `stg_order_filled` (updates Goldsky checkpoint)
@@ -64,7 +67,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let cfg = Config::from_env()?;
-    let pool = db::connect(&cfg.database_url).await?;
+    let pool = db::connect(
+        &cfg.database_url,
+        cfg.db_max_connections,
+        cfg.db_acquire_timeout,
+    )
+    .await?;
 
     match cli.command {
         Command::Migrate => {
@@ -97,15 +105,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::RunAll => {
             sqlx::migrate!("./migrations").run(&pool).await?;
-            ingest_markets::run(&pool, &cfg).await?;
-            enrich_gamma::run(&pool, &cfg).await?;
-            goldsky::run(&pool, &cfg).await?;
-            process_trades::run(&pool, &cfg).await?;
-            refresh_wallets::run(&pool).await?;
-            ingest_activities::run(&pool, &cfg).await?;
-            snapshot_wallets::run(&pool, &cfg).await?;
-            aggregate::run(&pool).await?;
+            run_pipeline_steps(&pool, &cfg).await?;
             tracing::info!("run-all completed");
+        }
+        Command::Sync => {
+            run_pipeline_steps(&pool, &cfg).await?;
+            tracing::info!("sync completed");
         }
         Command::Serve => {
             http_server::run_http(&cfg, pool).await?;
@@ -125,5 +130,18 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// 与 `run-all` 中 migrate **之后** 的步骤一致（适合 `sync` 与首次 `run-all` 复用）。
+async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
+    ingest_markets::run(pool, cfg).await?;
+    enrich_gamma::run(pool, cfg).await?;
+    goldsky::run(pool, cfg).await?;
+    process_trades::run(pool, cfg).await?;
+    refresh_wallets::run(pool).await?;
+    ingest_activities::run(pool, cfg).await?;
+    snapshot_wallets::run(pool, cfg).await?;
+    aggregate::run(pool).await?;
     Ok(())
 }

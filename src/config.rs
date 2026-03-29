@@ -3,6 +3,10 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
+    /// sqlx pool size (must stay below Postgres `max_connections` minus other clients).
+    pub db_max_connections: u32,
+    /// How long to wait for a free pool slot before erroring (`pool timed out`).
+    pub db_acquire_timeout: Duration,
     pub gamma_origin: String,
     pub data_api_origin: String,
     pub goldsky_graphql_url: String,
@@ -28,6 +32,16 @@ impl Config {
         let database_url = std::env::var("DATABASE_URL")
             .or_else(|_| std::env::var("PIPELINE_DATABASE_URL"))
             .map_err(|_| anyhow::anyhow!("DATABASE_URL or PIPELINE_DATABASE_URL required"))?;
+        let db_max_connections: u32 = std::env::var("PIPELINE_DB_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16)
+            .clamp(1, 256);
+        let db_acquire_timeout_sec: u64 = std::env::var("PIPELINE_DB_ACQUIRE_TIMEOUT_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120)
+            .max(1);
         let gamma_origin = std::env::var("PIPELINE_GAMMA_ORIGIN")
             .unwrap_or_else(|_| "https://gamma-api.polymarket.com".to_string())
             .trim_end_matches('/')
@@ -77,6 +91,8 @@ impl Config {
 
         Ok(Self {
             database_url,
+            db_max_connections,
+            db_acquire_timeout: Duration::from_secs(db_acquire_timeout_sec),
             gamma_origin,
             data_api_origin,
             goldsky_graphql_url,
