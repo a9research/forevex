@@ -2,6 +2,8 @@
 //! `OrderFilled` Parquet into `stg_order_filled`.
 //!
 //! **对象存储为唯一 raw 源**：本地 `polymarket/**/*.parquet` 仅作解压/增量暂存；配置 bucket 时先 **上传 OSS 再删本地**，再从 OSS 读入 Postgres。
+//!
+//! **四目录一致规则**（`polymarket/trades|blocks|markets|legacy_trades`）：列举、入库、统计、清理均 **忽略** macOS 旁路文件 **`._*.parquet`**（见 `is_apple_double_parquet_object_key`）。`ingest-markets`（OSS Parquet）与 `oss-apple-double` 等同理。
 
 use crate::checkpoint;
 use crate::config::Config;
@@ -501,44 +503,52 @@ async fn ingest_trade_batch(
     Ok(inserted)
 }
 
-async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
-    let store = build_object_store(cfg)?;
+/// `polymarket/trades` 等子路径（可带 `s3_prefix`）。
+pub fn oss_polymarket_path(cfg: &Config, polymarket_suffix: &str) -> String {
     let prefix = s3_object_prefix(cfg);
-    let blocks_key = if prefix.is_empty() {
-        "polymarket/blocks".to_string()
+    let suffix = polymarket_suffix.trim_matches('/');
+    if prefix.is_empty() {
+        suffix.to_string()
     } else {
-        format!("{prefix}/polymarket/blocks")
-    };
-
-    let mut block_map = HashMap::new();
-    let mut list = store.list(Some(&ObjPath::from(blocks_key.as_str())));
-    while let Some(res) = list.next().await {
-        let meta = res?;
-        let loc = meta.location.as_ref();
-        if !loc.ends_with(".parquet") || is_apple_double_parquet_object_key(loc) {
-            continue;
-        }
-        let bytes = store.get(&meta.location).await?.bytes().await?;
-        merge_blocks_parquet_bytes(&bytes, &mut block_map)?;
+        format!("{prefix}/{suffix}")
     }
-    tracing::info!(blocks = block_map.len(), "loaded block timestamps from object store");
+}
 
-    let trades_prefix = if prefix.is_empty() {
-        "polymarket/trades".to_string()
-    } else {
-        format!("{prefix}/polymarket/trades")
-    };
-    let mut trade_paths: Vec<(ObjPath, String)> = Vec::new();
-    let mut list = store.list(Some(&ObjPath::from(trades_prefix.as_str())));
+/// 列出 OSS 下某目录内所有真实 `.parquet`（**跳过** `._*.parquet`），按规范化键排序。  
+/// 供 `trades` / `blocks` / `markets` / `legacy_trades` 及 `ingest-pma` 共用。
+pub async fn list_oss_parquet_objects_under_with_store(
+    store: Arc<dyn ObjectStore>,
+    cfg: &Config,
+    polymarket_subdir: &str,
+) -> anyhow::Result<Vec<(ObjPath, String)>> {
+    let prefix = oss_polymarket_path(cfg, polymarket_subdir);
+    let mut out = Vec::new();
+    let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
     while let Some(res) = list.next().await {
         let meta = res?;
         let loc = meta.location.as_ref();
         if loc.ends_with(".parquet") && !is_apple_double_parquet_object_key(loc) {
             let norm = normalize_pma_parquet_relative_key(loc);
-            trade_paths.push((meta.location, norm));
+            out.push((meta.location, norm));
         }
     }
-    trade_paths.sort_by(|a, b| a.1.cmp(&b.1));
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
+}
+
+async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
+    let store = build_object_store(cfg)?;
+    let mut block_map = HashMap::new();
+    let block_objs =
+        list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/blocks").await?;
+    for (path, _) in block_objs {
+        let bytes = store.get(&path).await?.bytes().await?;
+        merge_blocks_parquet_bytes(&bytes, &mut block_map)?;
+    }
+    tracing::info!(blocks = block_map.len(), "loaded block timestamps from object store");
+
+    let trade_paths =
+        list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/trades").await?;
 
     let cursor = checkpoint::load(pool, PIPELINE_KEY).await?;
     let last_done = cursor
@@ -581,36 +591,13 @@ fn merge_blocks_parquet_bytes(bytes: &bytes::Bytes, map: &mut HashMap<i64, i64>)
     Ok(())
 }
 
-/// `polymarket/trades` 等子路径（可带 `s3_prefix`）。
-pub fn oss_polymarket_path(cfg: &Config, polymarket_suffix: &str) -> String {
-    let prefix = s3_object_prefix(cfg);
-    let suffix = polymarket_suffix.trim_matches('/');
-    if prefix.is_empty() {
-        suffix.to_string()
-    } else {
-        format!("{prefix}/{suffix}")
-    }
-}
-
 /// 列出 OSS 下某目录内所有 `.parquet`（`ObjectStore` 路径 + 规范化键），按规范化键排序。
 pub async fn list_oss_parquet_objects_under(
     cfg: &Config,
     polymarket_subdir: &str,
 ) -> anyhow::Result<Vec<(ObjPath, String)>> {
     let store = build_object_store(cfg)?;
-    let prefix = oss_polymarket_path(cfg, polymarket_subdir);
-    let mut out = Vec::new();
-    let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
-    while let Some(res) = list.next().await {
-        let meta = res?;
-        let loc = meta.location.as_ref();
-        if loc.ends_with(".parquet") && !is_apple_double_parquet_object_key(loc) {
-            let norm = normalize_pma_parquet_relative_key(loc);
-            out.push((meta.location, norm));
-        }
-    }
-    out.sort_by(|a, b| a.1.cmp(&b.1));
-    Ok(out)
+    list_oss_parquet_objects_under_with_store(store, cfg, polymarket_subdir).await
 }
 
 /// 仅规范化键（用于统计、展示）。
@@ -631,13 +618,15 @@ pub async fn pipeline_pma_status(pool: &PgPool, cfg: &Config) -> anyhow::Result<
         return Ok(serde_json::json!({
             "mode": "no_object_store",
             "pma_order_filled_checkpoint": cursor,
-            "hint": "配置 PIPELINE_OSS_BUCKET 后可展示 OSS 上 trades/blocks/markets 文件数与待处理 trades 文件数",
+            "hint": "配置 PIPELINE_OSS_BUCKET 后可展示四目录（trades/blocks/markets/legacy_trades）Parquet 文件数与待处理 trades 文件数",
         }));
     }
 
     let trade_keys = list_oss_parquet_keys_under(cfg, "polymarket/trades").await.unwrap_or_default();
     let block_keys = list_oss_parquet_keys_under(cfg, "polymarket/blocks").await.unwrap_or_default();
     let market_keys = list_oss_parquet_keys_under(cfg, "polymarket/markets").await.unwrap_or_default();
+    let legacy_trade_keys =
+        list_oss_parquet_keys_under(cfg, "polymarket/legacy_trades").await.unwrap_or_default();
     let pending: usize = trade_keys
         .iter()
         .filter(|k| !should_skip_pma_file(k, last_done.as_deref()))
@@ -650,6 +639,7 @@ pub async fn pipeline_pma_status(pool: &PgPool, cfg: &Config) -> anyhow::Result<
         "oss_trade_parquet_files": trade_keys.len(),
         "oss_block_parquet_files": block_keys.len(),
         "oss_markets_parquet_files": market_keys.len(),
+        "oss_legacy_trades_parquet_files": legacy_trade_keys.len(),
         "trade_files_sample": trade_keys.iter().take(8).collect::<Vec<_>>(),
         "pma_order_filled": {
             "last_completed_file": last_done,

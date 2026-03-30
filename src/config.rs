@@ -36,7 +36,7 @@ pub struct Config {
     /// `polymarket-pipeline serve` bind address.
     pub http_bind: String,
 
-    /// 含 `polymarket/trades`、`polymarket/blocks` 的目录（**仅作解压/增量暂存**，以对象存储为准）。
+    /// 含 `polymarket/{trades,blocks,markets,legacy_trades}` 的目录（**仅作解压/增量暂存**，以对象存储为准）。
     pub pma_data_dir: PathBuf,
     /// `bootstrap-data` 默认下载地址（PMA 预置包）。
     pub bootstrap_download_url: String,
