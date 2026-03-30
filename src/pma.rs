@@ -662,25 +662,61 @@ pub async fn report_apple_double_parquet_oss(cfg: &Config) -> anyhow::Result<ser
     let store = build_object_store(cfg)?;
     let mut canonical_norm: HashSet<String> = HashSet::new();
     let mut apple_raw: Vec<(String, usize, String)> = Vec::new();
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    const LOG_EVERY: u64 = 2000;
 
+    let mut cancelled = false;
     for subdir in PMA_OSS_SUBDIRS {
         let prefix = oss_polymarket_path(cfg, subdir);
+        let mut scanned: u64 = 0;
+        let mut apple_found: u64 = 0;
         let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
-        while let Some(res) = list.next().await {
-            let meta = res?;
-            let loc = meta.location.as_ref();
-            if !loc.ends_with(".parquet") {
-                continue;
+        loop {
+            tokio::select! {
+                _ = &mut ctrl_c => {
+                    cancelled = true;
+                    break;
+                }
+                next = list.next() => {
+                    let Some(res) = next else { break; };
+                    let meta = res?;
+                    scanned += 1;
+                    let loc = meta.location.as_ref();
+                    if loc.ends_with(".parquet") && is_apple_double_parquet_object_key(loc) {
+                        apple_found += 1;
+                        apple_raw.push((
+                            loc.to_string(),
+                            meta.size,
+                            normalize_pma_parquet_relative_key(loc),
+                        ));
+                    } else if loc.ends_with(".parquet") {
+                        canonical_norm.insert(normalize_pma_parquet_relative_key(loc));
+                    }
+                    if scanned % LOG_EVERY == 0 {
+                        tracing::info!(
+                            subdir,
+                            prefix,
+                            scanned,
+                            apple_found,
+                            canonical_distinct = canonical_norm.len(),
+                            "oss-apple-double: listing progress"
+                        );
+                    }
+                }
             }
-            if is_apple_double_parquet_object_key(loc) {
-                apple_raw.push((
-                    loc.to_string(),
-                    meta.size,
-                    normalize_pma_parquet_relative_key(loc),
-                ));
-            } else {
-                canonical_norm.insert(normalize_pma_parquet_relative_key(loc));
-            }
+        }
+        tracing::info!(
+            subdir,
+            prefix,
+            scanned,
+            apple_found,
+            canonical_distinct = canonical_norm.len(),
+            cancelled,
+            "oss-apple-double: finished listing subdir"
+        );
+        if cancelled {
+            break;
         }
     }
 
@@ -717,15 +753,54 @@ pub async fn delete_apple_double_parquet_oss(
 ) -> anyhow::Result<(usize, Vec<String>)> {
     let store = build_object_store(cfg)?;
     let mut targets: Vec<ObjPath> = Vec::new();
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    const LOG_EVERY: u64 = 2000;
+    let mut cancelled = false;
     for subdir in PMA_OSS_SUBDIRS {
         let prefix = oss_polymarket_path(cfg, subdir);
+        let mut scanned: u64 = 0;
+        let mut apple_found: u64 = 0;
         let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
-        while let Some(res) = list.next().await {
-            let meta = res?;
-            let loc = meta.location.as_ref();
-            if loc.ends_with(".parquet") && is_apple_double_parquet_object_key(loc) {
-                targets.push(meta.location);
+        loop {
+            tokio::select! {
+                _ = &mut ctrl_c => {
+                    cancelled = true;
+                    break;
+                }
+                next = list.next() => {
+                    let Some(res) = next else { break; };
+                    let meta = res?;
+                    scanned += 1;
+                    let loc = meta.location.as_ref();
+                    if loc.ends_with(".parquet") && is_apple_double_parquet_object_key(loc) {
+                        apple_found += 1;
+                        targets.push(meta.location);
+                    }
+                    if scanned % LOG_EVERY == 0 {
+                        tracing::info!(
+                            subdir,
+                            prefix,
+                            scanned,
+                            apple_found,
+                            targets = targets.len(),
+                            "oss-apple-double: listing progress"
+                        );
+                    }
+                }
             }
+        }
+        tracing::info!(
+            subdir,
+            prefix,
+            scanned,
+            apple_found,
+            targets = targets.len(),
+            cancelled,
+            "oss-apple-double: finished listing subdir"
+        );
+        if cancelled {
+            break;
         }
     }
     let mut paths: Vec<String> = targets.iter().map(|p| p.to_string()).collect();
@@ -736,9 +811,29 @@ pub async fn delete_apple_double_parquet_oss(
     }
 
     let mut deleted = 0usize;
-    for loc in targets {
-        store.delete(&loc).await?;
-        deleted += 1;
+    let total = paths.len();
+    for (idx, loc) in targets.into_iter().enumerate() {
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                tracing::warn!(
+                    deleted,
+                    total,
+                    "oss-apple-double: cancelled during deletion"
+                );
+                break;
+            }
+            res = store.delete(&loc) => {
+                res?;
+                deleted += 1;
+                if (idx + 1) as u64 % LOG_EVERY == 0 {
+                    tracing::info!(
+                        deleted,
+                        total,
+                        "oss-apple-double: deletion progress"
+                    );
+                }
+            }
+        }
     }
     Ok((deleted, paths))
 }

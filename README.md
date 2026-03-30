@@ -116,6 +116,217 @@ cargo run -- run-all            # migrate + 与 sync 相同步骤（不含 serve
 cargo run -- serve              # GET /health、GET /stats、GET /pipeline-status（与 `status` 子命令同源）
 ```
 
+## 完整执行步骤（从初始化到增量）
+
+以下步骤假设：你已经把 PMA 初始数据上传到 OSS（`polymarket/{trades,blocks,markets}/` 至少包含 `trades` + `blocks`）。
+
+### 0. 清空 PostgreSQL（按你的需求二选一）
+
+方案 A（最干净，删掉 volume）：
+```bash
+cd forevex
+docker compose down -v
+docker compose up -d postgres
+```
+
+方案 B（保留 volume 但重建库）：
+> 按你自己的数据库管理方式删除 `polymarket_pipeline` 内现有表数据/重建库。
+>
+> 目标是：跑 `cargo run -- migrate` 后应处于“空库/无旧 checkpoint”状态。
+
+### 1. 配置环境变量
+
+在 `forevex/.env` 中确保：
+1) `DATABASE_URL` 指向你当前清空后的 Postgres 库  
+2) `PIPELINE_OSS_BUCKET` / `PIPELINE_OSS_REGION` / `PIPELINE_OSS_ENDPOINT` / AK/SK 已配置好  
+3) 选择 markets 来源（影响 `ingest-markets`）：
+```text
+PIPELINE_DIM_MARKETS_SOURCE=auto
+# auto: 若 OSS 存在 polymarket/markets/*.parquet（忽略 ._ 旁路），则用 OSS；否则用 Gamma HTTP
+```
+
+### 2. （可选）清理 OSS 上 macOS `._*.parquet` 旁路文件
+
+先报告（建议你确认已完全成对后再删）：
+```bash
+cargo run -- oss-apple-double
+```
+
+确认 `apple_double_without_counterpart` 为空或你已确认可删后执行：
+```bash
+cargo run -- oss-apple-double --delete
+```
+
+### 3. 首次初始化：建表 + 全量跑通
+
+```bash
+cd forevex
+
+cargo run -- migrate
+cargo run -- run-all
+```
+
+首次执行会写入：
+- `dim_markets`（由 `ingest-markets` 写入：OSS Parquet 或 Gamma HTTP）
+- `stg_order_filled`（由 `ingest-pma` 写入：只从 OSS `polymarket/trades|blocks` 读）
+- `fact_trades` / `dim_wallets` / `fact_account_activities`（按配置可有/可空）
+- `wallet_api_snapshot` / `agg_*`
+- `etl_checkpoint`（用于后续 `sync` 的增量续跑）
+
+### 4. 判断你这台机器上 `ingest-markets` 会走 OSS 还是 Gamma（可直接照抄）
+
+跑一次：
+```bash
+cargo run -- status
+```
+
+看输出里的 `pma.oss_markets_parquet_files`：
+- 若 `pma.oss_markets_parquet_files > 0`，且 `PIPELINE_DIM_MARKETS_SOURCE=auto`：`ingest-markets` 会从 **OSS `polymarket/markets/*.parquet`** 增量灌库
+- 若 `pma.oss_markets_parquet_files == 0`：`ingest-markets` 会回退到 **Gamma HTTP**（checkpoint：`ingest_markets`）
+
+### 5. 日常增量：不重建表，直接续跑
+
+```bash
+cd forevex
+cargo run -- sync
+```
+
+`sync` 会按固定顺序执行（不含 `migrate`）：
+`ingest-markets → enrich-gamma → ingest-pma → process-trades → refresh-wallets → ingest-activities → snapshot-wallets → aggregate`
+
+## 你机器上可直接照抄的执行顺序（结合你当前假设：OSS 已有初始数据）
+
+你可以把下面当作“从零到可用”的最短路径（把 OSS 环境变量写好）：
+
+1. 清空 PG（先删旧数据，确保是新库）：
+```bash
+cd forevex
+docker compose down -v
+docker compose up -d postgres
+```
+
+2. 首次全量：
+```bash
+cargo run -- migrate
+cargo run -- run-all
+```
+
+3. 看是否都跑到你期望的进度：
+```bash
+cargo run -- status
+```
+
+4. 后续每天/每次追加 OSS 新的 PMA 增量包后：
+```bash
+cargo run -- sync
+```
+
+下面把整个流程按你这个项目的实现，串成「初始化 → 增量拉取 → 处理加工 → 存储落库」的完整步骤清单（每一步都包含：步骤/数据源/存储方式/操作命令）。
+
+0. 前置条件（一次性）
+OSS 上有 PMA 初始数据（你已完成）
+
+目录按规格：polymarket/trades/、polymarket/blocks/（以及可选 polymarket/markets/、polymarket/legacy_trades/）
+旁路文件 ._*.parquet 会被代码忽略（且你之前验证 canonical_counterpart_exists: true，基本可删）。
+配置 forevex/.env
+
+DATABASE_URL：Postgres 连接串
+PIPELINE_OSS_BUCKET / PIPELINE_OSS_REGION / PIPELINE_OSS_ENDPOINT / AK/SK
+可选：PIPELINE_S3_PREFIX（对象键有前缀时）
+PIPELINE_DIM_MARKETS_SOURCE=auto（默认）：OSS 有 polymarket/markets/*.parquet 就用 Parquet，否则用 Gamma HTTP。
+（可选）如果你要清理 ._ 旁路文件
+
+先报告：cargo run -- oss-apple-double
+再删除：cargo run -- oss-apple-double --delete
+
+1. 初始化（清空 PG → 首次全量跑通）
+满足你要求的“先清空 PG + OSS 已有初始 PMA”。
+
+清空 PostgreSQL（确保是空库）
+
+最稳：docker compose down -v 后再 docker compose up -d postgres
+或你自定义的 drop/recreate 数据库方式（但要确保表/数据都没了）。
+建表（migrations）
+
+在 forevex/：
+cargo run -- migrate
+跑通全量管线（从 OSS 读 raw → 入库 → 加工 → 聚合）
+
+推荐一次性跑完：
+cargo run -- run-all
+这会依次执行：
+ingest-markets → enrich-gamma → ingest-pma → process-trades → refresh-wallets → ingest-activities → snapshot-wallets → aggregate
+初始化后快速检查
+
+cargo run -- status
+或 cargo run -- serve 后看 GET /pipeline-status
+
+2. 增量拉取与续跑（日常/定时）
+之后你的日常更新只需要：
+
+增量同步（不再执行 migrate）
+
+cargo run -- sync
+增量续跑点（关键：etl_checkpoint）
+
+ingest-markets
+checkpoint key：ingest_markets
+增量依据：Gamma markets 的 offset（当你选择 Gamma HTTP 来源时）
+如果走 OSS polymarket/markets/*.parquet：会用文件级 last_completed_file（pipeline key：ingest_markets_pma）
+ingest-pma（PMA trades/blocks）
+checkpoint key：pma_order_filled
+增量依据：OSS 的 trades Parquet 按字典序文件键，记录 cursor_json.last_completed_file，只处理更后面的文件
+同时忽略 ._*.parquet
+process-trades
+checkpoint key：process_trades
+增量依据：last_stg_id，只处理新增的 stg_order_filled 行
+
+其余步骤的幂等/重算方式
+
+process-trades / fact_trades：都有 ON CONFLICT DO NOTHING，可安全重复跑。
+refresh-wallets：以 fact_trades 重建维表范围（upsert min/max），可重复跑。
+ingest-activities：对每个 proxy 的非 TRADE 活动做“是否已存在”检查（避免重复插入）。
+snapshot-wallets：每次会往 wallet_api_snapshot 追加新行（带 fetched_at），不做去重（一般这是你想要的“快照历史”）。
+aggregate：会 DELETE 后从 fact_trades 重建聚合表（因此安全，但要接受全量重算成本）。
+
+3. 数据源 → 处理 → 存储方式（你关心的“整个过程”）
+按链路理解即可：
+
+数据源（Raw）
+
+PMA：OSS 上的 Parquet
+polymarket/trades/*.parquet → 原始成交行
+polymarket/blocks/*.parquet → 由 block_number → timestamp 映射
+polymarket/markets/*.parquet（可选）→ 市场维表来源
+polymarket/legacy_trades/*.parquet（可选，代码列举/清理已一致，默认 ETL 仍主要走 trades/blocks）
+
+Gamma HTTP / Data API（非 Parquet 部分）
+ingest-markets（当没 markets Parquet 时）
+enrich-gamma：给 dim_markets 填 category_raw / topic_primary
+ingest-activities：Data API activity 拉取非 TRADE
+snapshot-wallets：user-stats / user-pnl / public-profile 快照
+
+处理（Staging / Fact / Enrich / Aggregate）
+
+ingest-pma：把 PMA trades 灌入 stg_order_filled
+process-trades：把 stg_order_filled + dim_markets 加工为 fact_trades（对齐 process_live 语义，方向、price、金额 ÷10^6 等在代码里实现）
+enrich-gamma：补 dim_markets.category_raw/topic_primary
+refresh-wallets：从 fact_trades 重建 dim_wallets
+aggregate：从 fact_trades 重建 agg_wallet_topic + agg_global_daily
+
+存储（落库到哪里）
+
+原始数据（raw Parquet）：OSS（权威），本地 polymarket/** 只用于解压/暂存（有 bootstrap 时会上传并删本地）
+加工结果与服务表（Postgres）：
+dim_markets（市场维表）
+stg_order_filled（PMA 原始成交 staging）
+fact_trades（加工后的事实成交）
+dim_wallets（钱包维表）
+fact_account_activities（账户活动）
+wallet_api_snapshot（API 快照）
+agg_wallet_topic / agg_global_daily（聚合结果）
+etl_checkpoint（各步骤增量游标）
+
 ### `run-all` vs `sync`
 
 | 命令 | migrate | 后续管线 |
