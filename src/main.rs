@@ -5,6 +5,7 @@ use polymarket_pipeline::{
     aggregate, bootstrap, config::Config, db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma,
     process_trades, refresh_wallets, report, snapshot_wallets,
 };
+use serde_json::json;
 use sqlx::PgPool;
 
 #[derive(Parser)]
@@ -45,6 +46,12 @@ enum Command {
     Serve,
     /// 打印 OSS PMA 进度 + `etl_checkpoint`（与 `/pipeline-status` 一致）
     Status,
+    /// 报告 OSS 上 `._*.parquet`（macOS AppleDouble）是否与真实 Parquet 成对；`--delete` 删除这些旁路文件
+    OssAppleDouble {
+        /// 删除所有匹配的 `._*.parquet`（建议先不加本参数看 JSON 报告）
+        #[arg(long)]
+        delete: bool,
+    },
     /// 下载 `data.tar.zst` 并解压；若已配置 OSS bucket 则上传并删除本地 `polymarket/`
     BootstrapData {
         /// 覆盖默认 `PIPELINE_BOOTSTRAP_DOWNLOAD_URL`
@@ -70,6 +77,30 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let cfg = Config::from_env()?;
+
+    match &cli.command {
+        Command::OssAppleDouble { delete } => {
+            if cfg.s3_bucket.is_none() {
+                anyhow::bail!("oss-apple-double 需要 PIPELINE_OSS_BUCKET（或 PIPELINE_S3_BUCKET）");
+            }
+            if *delete {
+                let (n, paths) = pma::delete_apple_double_parquet_oss(&cfg, false).await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "deleted": n,
+                        "paths": paths,
+                    }))?
+                );
+            } else {
+                let v = pma::report_apple_double_parquet_oss(&cfg).await?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let pool = db::connect(
         &cfg.database_url,
         cfg.db_max_connections,
@@ -136,6 +167,9 @@ async fn main() -> anyhow::Result<()> {
                 },
             )
             .await?;
+        }
+        Command::OssAppleDouble { .. } => {
+            unreachable!("oss-apple-double handled before DB connect");
         }
     }
 

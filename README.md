@@ -101,6 +101,8 @@ docker compose stop postgres
 cargo run -- migrate
 cargo run -- ingest-markets    # dim_markets（auto：OSS 有 markets Parquet 则增量文件级 checkpoint `ingest_markets_pma`；否则 Gamma offset `ingest_markets`）
 cargo run -- status             # JSON：OSS 上 trades/blocks/markets 文件数、pma 待处理 trades 文件数、全部 etl_checkpoint
+cargo run -- oss-apple-double   # 报告 OSS 上 macOS `._*.parquet` 旁路是否与真实文件成对（不需 Postgres）
+cargo run -- oss-apple-double --delete   # 删除所有 `._*.parquet`（建议先跑上一行看 JSON）
 cargo run -- enrich-gamma       # category_raw / topic_primary
 cargo run -- ingest-pma         # stg_order_filled（OSS 为 raw；本地 parquet 会先上传再删）
 cargo run -- bootstrap-data      # 下载并解压；若已配 OSS bucket 则上传并删除本地 polymarket/

@@ -12,7 +12,7 @@ use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, PutPayload};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use walkdir::WalkDir;
@@ -39,6 +39,13 @@ pub fn normalize_pma_parquet_relative_key(key: &str) -> String {
         return key[2..].to_string();
     }
     key.to_string()
+}
+
+/// macOS 在拷贝到网络盘/OSS 时产生的 **AppleDouble** 旁路文件（通常极小，非 Parquet 数据体）。
+/// 管线应 **完全忽略**，不列入清单、不读入、不上传；清理任务可安全删除。
+pub fn is_apple_double_parquet_object_key(loc: &str) -> bool {
+    let base = loc.rsplit_once('/').map(|(_, f)| f).unwrap_or(loc);
+    base.starts_with("._") && base.ends_with(".parquet")
 }
 
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
@@ -167,6 +174,11 @@ pub async fn sync_local_polymarket_to_oss_and_delete(cfg: &Config) -> anyhow::Re
                     .and_then(|x| x.to_str())
                     .map(|e| e.eq_ignore_ascii_case("parquet"))
                     .unwrap_or(false)
+                && !p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("._"))
+                    .unwrap_or(false)
         })
         .collect();
     paths.sort();
@@ -229,7 +241,14 @@ fn load_block_timestamps_local(base: &Path) -> anyhow::Result<HashMap<i64, i64>>
     }
     for entry in WalkDir::new(&dir).max_depth(1).into_iter().filter_map(|e| e.ok()) {
         let p = entry.path();
-        if p.is_file() && p.extension().map(|x| x == "parquet").unwrap_or(false) {
+        if p.is_file()
+            && p.extension().map(|x| x == "parquet").unwrap_or(false)
+            && !p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("._"))
+                .unwrap_or(false)
+        {
             merge_blocks_parquet_file(p, &mut map)?;
         }
     }
@@ -365,7 +384,15 @@ fn list_local_trade_parquets(base: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .into_iter()
         .filter_map(|e| e.ok())
         .map(|e| e.path().to_path_buf())
-        .filter(|p| p.is_file() && p.extension().map(|x| x == "parquet").unwrap_or(false))
+        .filter(|p| {
+            p.is_file()
+                && p.extension().map(|x| x == "parquet").unwrap_or(false)
+                && !p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("._"))
+                    .unwrap_or(false)
+        })
         .collect();
     v.sort();
     Ok(v)
@@ -488,7 +515,7 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
     while let Some(res) = list.next().await {
         let meta = res?;
         let loc = meta.location.as_ref();
-        if !loc.ends_with(".parquet") {
+        if !loc.ends_with(".parquet") || is_apple_double_parquet_object_key(loc) {
             continue;
         }
         let bytes = store.get(&meta.location).await?.bytes().await?;
@@ -506,7 +533,7 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
     while let Some(res) = list.next().await {
         let meta = res?;
         let loc = meta.location.as_ref();
-        if loc.ends_with(".parquet") {
+        if loc.ends_with(".parquet") && !is_apple_double_parquet_object_key(loc) {
             let norm = normalize_pma_parquet_relative_key(loc);
             trade_paths.push((meta.location, norm));
         }
@@ -577,7 +604,7 @@ pub async fn list_oss_parquet_objects_under(
     while let Some(res) = list.next().await {
         let meta = res?;
         let loc = meta.location.as_ref();
-        if loc.ends_with(".parquet") {
+        if loc.ends_with(".parquet") && !is_apple_double_parquet_object_key(loc) {
             let norm = normalize_pma_parquet_relative_key(loc);
             out.push((meta.location, norm));
         }
@@ -632,9 +659,103 @@ pub async fn pipeline_pma_status(pool: &PgPool, cfg: &Config) -> anyhow::Result<
     }))
 }
 
+const PMA_OSS_SUBDIRS: &[&str] = &[
+    "polymarket/trades",
+    "polymarket/blocks",
+    "polymarket/markets",
+    "polymarket/legacy_trades",
+];
+
+/// 扫描 OSS 上所有 `._*.parquet`：是否与「去掉 `._` 后的 canonical 键」对应的 **真实数据文件** 同存。
+/// 用于确认 AppleDouble 旁路可删（`canonical_counterpart_exists == true` 时仅为重复元数据）。
+pub async fn report_apple_double_parquet_oss(cfg: &Config) -> anyhow::Result<serde_json::Value> {
+    let store = build_object_store(cfg)?;
+    let mut canonical_norm: HashSet<String> = HashSet::new();
+    let mut apple_raw: Vec<(String, usize, String)> = Vec::new();
+
+    for subdir in PMA_OSS_SUBDIRS {
+        let prefix = oss_polymarket_path(cfg, subdir);
+        let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
+        while let Some(res) = list.next().await {
+            let meta = res?;
+            let loc = meta.location.as_ref();
+            if !loc.ends_with(".parquet") {
+                continue;
+            }
+            if is_apple_double_parquet_object_key(loc) {
+                apple_raw.push((
+                    loc.to_string(),
+                    meta.size,
+                    normalize_pma_parquet_relative_key(loc),
+                ));
+            } else {
+                canonical_norm.insert(normalize_pma_parquet_relative_key(loc));
+            }
+        }
+    }
+
+    let mut apple = Vec::new();
+    let mut orphan_only: Vec<String> = Vec::new();
+    for (key, size, norm) in apple_raw {
+        let exists = canonical_norm.contains(&norm);
+        if !exists {
+            orphan_only.push(key.clone());
+        }
+        apple.push(serde_json::json!({
+            "key": key,
+            "size": size,
+            "normalized_key": norm,
+            "canonical_counterpart_exists": exists,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "bucket": cfg.s3_bucket,
+        "s3_prefix": cfg.s3_prefix,
+        "note": "._*.parquet 为 macOS AppleDouble 旁路，非 PMA 数据本体；管线已忽略。可删除 canonical 已存在时的旁路。",
+        "apple_double_parquet_count": apple.len(),
+        "canonical_parquet_distinct_keys": canonical_norm.len(),
+        "apple_double_without_counterpart": orphan_only,
+        "apple_double_files": apple,
+    }))
+}
+
+/// 删除 OSS 上所有 `._*.parquet`。`dry_run: true` 时只返回将删除的键，不调用 delete。
+pub async fn delete_apple_double_parquet_oss(
+    cfg: &Config,
+    dry_run: bool,
+) -> anyhow::Result<(usize, Vec<String>)> {
+    let store = build_object_store(cfg)?;
+    let mut targets: Vec<ObjPath> = Vec::new();
+    for subdir in PMA_OSS_SUBDIRS {
+        let prefix = oss_polymarket_path(cfg, subdir);
+        let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
+        while let Some(res) = list.next().await {
+            let meta = res?;
+            let loc = meta.location.as_ref();
+            if loc.ends_with(".parquet") && is_apple_double_parquet_object_key(loc) {
+                targets.push(meta.location);
+            }
+        }
+    }
+    let mut paths: Vec<String> = targets.iter().map(|p| p.to_string()).collect();
+    paths.sort();
+
+    if dry_run {
+        return Ok((0, paths));
+    }
+
+    let mut deleted = 0usize;
+    for loc in targets {
+        store.delete(&loc).await?;
+        deleted += 1;
+    }
+    Ok((deleted, paths))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{normalize_pma_parquet_relative_key, should_skip_pma_file};
+    use super::{is_apple_double_parquet_object_key, normalize_pma_parquet_relative_key, should_skip_pma_file};
 
     #[test]
     fn should_skip_respects_lexicographic_order() {
@@ -643,6 +764,16 @@ mod tests {
         assert!(should_skip_pma_file("polymarket/trades/b.parquet", ld));
         assert!(!should_skip_pma_file("polymarket/trades/c.parquet", ld));
         assert!(!should_skip_pma_file("polymarket/trades/c.parquet", None));
+    }
+
+    #[test]
+    fn apple_double_detection() {
+        assert!(is_apple_double_parquet_object_key(
+            "polymarket/markets/._markets_40000_50000.parquet"
+        ));
+        assert!(!is_apple_double_parquet_object_key(
+            "polymarket/markets/markets_40000_50000.parquet"
+        ));
     }
 
     #[test]
