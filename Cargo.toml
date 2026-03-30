@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rust_decimal = { version = "1", features = ["serde"] }
 urlencoding = "2"
 axum = "0.7"
-# PMA Parquet + optional S3-compatible object storage (see docs/polymarket-data-platform-unified.md)
+# PMA Parquet + optional S3-compatible object storage (see docs/polymarket-data-foundation-pma-core.md)
 parquet = { version = "53", default-features = false, features = ["arrow", "snap"] }
 arrow = { version = "53", default-features = false }
 arrow-array = "53"

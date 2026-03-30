@@ -1,6 +1,7 @@
-//! Minimal read-only HTTP: health + row counts (P4 非 Parquet 部分).
+//! Minimal read-only HTTP: health + row counts + 管线进度（OSS / checkpoint）。
 
 use crate::config::Config;
+use crate::report;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -16,13 +17,18 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
+    pub cfg: Config,
 }
 
 pub async fn run_http(cfg: &Config, pool: PgPool) -> anyhow::Result<()> {
-    let state = AppState { pool };
+    let state = AppState {
+        pool,
+        cfg: cfg.clone(),
+    };
     let app = Router::new()
         .route("/health", get(health))
         .route("/stats", get(stats))
+        .route("/pipeline-status", get(pipeline_status))
         .with_state(Arc::new(state));
 
     let listener = tokio::net::TcpListener::bind(&cfg.http_bind).await?;
@@ -33,6 +39,13 @@ pub async fn run_http(cfg: &Config, pool: PgPool) -> anyhow::Result<()> {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+async fn pipeline_status(State(st): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    let report = report::pipeline_report(&st.pool, &st.cfg)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(report))
 }
 
 async fn stats(State(st): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {

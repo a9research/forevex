@@ -1,5 +1,6 @@
 //! Shared `etl_checkpoint` helpers.
 
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
@@ -29,4 +30,16 @@ pub async fn save(pool: &PgPool, pipeline: &str, cursor: Value) -> anyhow::Resul
 
 pub async fn save_ts_only(pool: &PgPool, pipeline: &str, last_ts: i64) -> anyhow::Result<()> {
     save(pool, pipeline, json!({ "last_timestamp": last_ts })).await
+}
+
+/// All pipeline checkpoints (for `/pipeline-status` / `status` CLI).
+pub async fn list_all(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<(String, Value, DateTime<Utc>)>> {
+    let rows: Vec<(String, Value, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT pipeline, cursor_json, updated_at FROM etl_checkpoint ORDER BY pipeline",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }

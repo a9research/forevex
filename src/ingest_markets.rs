@@ -1,7 +1,8 @@
-//! Gamma `GET /markets` — same semantics as poly_data `update_markets.py`.
+//! Gamma `GET /markets` — same semantics as poly_data `update_markets.py`；
+//! 或（规格主路径）从 OSS `polymarket/markets/*.parquet` 增量灌入。
 
 use crate::checkpoint;
-use crate::config::Config;
+use crate::config::{Config, DimMarketsSource};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -10,6 +11,52 @@ use sqlx::PgPool;
 const PIPELINE_KEY: &str = "ingest_markets";
 
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
+    let source = resolve_dim_markets_source(cfg).await?;
+    match source {
+        DimMarketsSource::GammaHttp => run_gamma_http(pool, cfg).await,
+        DimMarketsSource::PmaParquetOss => {
+            crate::ingest_markets_parquet::run_from_oss_parquet(pool, cfg).await
+        }
+        DimMarketsSource::Auto => {
+            unreachable!("resolve_dim_markets_source never returns Auto")
+        }
+    }
+}
+
+async fn resolve_dim_markets_source(cfg: &Config) -> anyhow::Result<DimMarketsSource> {
+    match cfg.dim_markets_source {
+        DimMarketsSource::Auto => {
+            if cfg.s3_bucket.is_some() {
+                let n = crate::pma::list_oss_parquet_keys_under(cfg, "polymarket/markets")
+                    .await?
+                    .len();
+                if n > 0 {
+                    tracing::info!(
+                        n,
+                        "ingest-markets: OSS has polymarket/markets parquet → PMA path"
+                    );
+                    Ok(DimMarketsSource::PmaParquetOss)
+                } else {
+                    tracing::info!("ingest-markets: no markets parquet on OSS → Gamma HTTP");
+                    Ok(DimMarketsSource::GammaHttp)
+                }
+            } else {
+                Ok(DimMarketsSource::GammaHttp)
+            }
+        }
+        DimMarketsSource::PmaParquetOss => {
+            if cfg.s3_bucket.is_none() {
+                anyhow::bail!(
+                    "PIPELINE_DIM_MARKETS_SOURCE=pma_parquet requires PIPELINE_OSS_BUCKET (or PIPELINE_S3_BUCKET)"
+                );
+            }
+            Ok(DimMarketsSource::PmaParquetOss)
+        }
+        DimMarketsSource::GammaHttp => Ok(DimMarketsSource::GammaHttp),
+    }
+}
+
+async fn run_gamma_http(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
     let client = Client::builder()
         .timeout(cfg.http_timeout)
         .build()?;
@@ -58,8 +105,13 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         }
     }
 
-    tracing::info!(total, "ingest-markets finished");
+    tracing::info!(total, "ingest-markets (gamma http) finished");
     Ok(total)
+}
+
+/// 与 Gamma HTTP 响应同形状的 JSON（供 PMA `markets` Parquet 映射复用）。
+pub async fn upsert_from_gamma_like_json(pool: &PgPool, market: &Value) -> anyhow::Result<bool> {
+    upsert_one_market(pool, market).await
 }
 
 async fn upsert_one_market(pool: &PgPool, market: &Value) -> anyhow::Result<bool> {

@@ -19,6 +19,28 @@ use walkdir::WalkDir;
 
 pub const PIPELINE_KEY: &str = "pma_order_filled";
 
+/// 已按字典序完成到 `last_done`（含该文件）；仅处理 **严格大于** `last_done` 的文件。
+/// `last_done == None` 表示全量（尚未记录进度）。
+pub fn should_skip_pma_file(norm_key: &str, last_done: Option<&str>) -> bool {
+    match last_done {
+        None => false,
+        Some(ld) => norm_key <= ld,
+    }
+}
+
+/// Tarballs may only contain `._blocks_....parquet` (macOS AppleDouble sidecars bundled into PMA archives).
+/// Strip the leading `._` on the **filename** so OSS keys and checkpoints match canonical `blocks_....parquet` names.
+pub fn normalize_pma_parquet_relative_key(key: &str) -> String {
+    if let Some((dir, file)) = key.rsplit_once('/') {
+        if file.starts_with("._") && file.len() > 2 {
+            return format!("{}/{}", dir, &file[2..]);
+        }
+    } else if key.starts_with("._") && key.len() > 2 {
+        return key[2..].to_string();
+    }
+    key.to_string()
+}
+
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
     if cfg.s3_bucket.is_some() {
         let uploaded = sync_local_polymarket_to_oss_and_delete(cfg).await?;
@@ -161,7 +183,11 @@ pub async fn sync_local_polymarket_to_oss_and_delete(cfg: &Config) -> anyhow::Re
 
     for path in &paths {
         let rel = path.strip_prefix(&base)?;
-        let key_str = rel.to_string_lossy().replace('\\', "/");
+        let raw = rel.to_string_lossy().replace('\\', "/");
+        let key_str = normalize_pma_parquet_relative_key(&raw);
+        if key_str != raw {
+            tracing::info!(from = %raw, to = %key_str, "PMA: normalized parquet object key (._ prefix)");
+        }
         let object_key = if prefix.is_empty() {
             key_str
         } else {
@@ -346,10 +372,12 @@ fn list_local_trade_parquets(base: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn rel_path_for_checkpoint(path: &Path, base: &Path) -> String {
-    path.strip_prefix(base)
+    let raw = path
+        .strip_prefix(base)
         .unwrap_or(path)
         .to_string_lossy()
-        .replace('\\', "/")
+        .replace('\\', "/");
+    normalize_pma_parquet_relative_key(&raw)
 }
 
 async fn ingest_from_local_dir(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
@@ -360,16 +388,12 @@ async fn ingest_from_local_dir(pool: &PgPool, cfg: &Config) -> anyhow::Result<us
     let last_done = cursor
         .as_ref()
         .and_then(|j| j.get("last_completed_file").and_then(|x| x.as_str()))
-        .map(String::from);
+        .map(|s| normalize_pma_parquet_relative_key(s));
 
     let mut total = 0usize;
-    let mut started = last_done.is_none();
     for path in &files {
         let rel = rel_path_for_checkpoint(path, &base);
-        if !started {
-            if Some(rel.as_str()) == last_done.as_deref() {
-                started = true;
-            }
+        if should_skip_pma_file(&rel, last_done.as_deref()) {
             continue;
         }
         let n = ingest_one_trade_parquet_file(pool, path, &block_map).await?;
@@ -463,7 +487,8 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
     let mut list = store.list(Some(&ObjPath::from(blocks_key.as_str())));
     while let Some(res) = list.next().await {
         let meta = res?;
-        if !meta.location.as_ref().ends_with(".parquet") {
+        let loc = meta.location.as_ref();
+        if !loc.ends_with(".parquet") {
             continue;
         }
         let bytes = store.get(&meta.location).await?.bytes().await?;
@@ -476,30 +501,27 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
     } else {
         format!("{prefix}/polymarket/trades")
     };
-    let mut trade_paths: Vec<ObjPath> = Vec::new();
+    let mut trade_paths: Vec<(ObjPath, String)> = Vec::new();
     let mut list = store.list(Some(&ObjPath::from(trades_prefix.as_str())));
     while let Some(res) = list.next().await {
         let meta = res?;
-        if meta.location.as_ref().ends_with(".parquet") {
-            trade_paths.push(meta.location);
+        let loc = meta.location.as_ref();
+        if loc.ends_with(".parquet") {
+            let norm = normalize_pma_parquet_relative_key(loc);
+            trade_paths.push((meta.location, norm));
         }
     }
-    trade_paths.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    trade_paths.sort_by(|a, b| a.1.cmp(&b.1));
 
     let cursor = checkpoint::load(pool, PIPELINE_KEY).await?;
     let last_done = cursor
         .as_ref()
         .and_then(|j| j.get("last_completed_file").and_then(|x| x.as_str()))
-        .map(String::from);
+        .map(|s| normalize_pma_parquet_relative_key(s));
 
     let mut total = 0usize;
-    let mut started = last_done.is_none();
-    for path in trade_paths {
-        let key = path.as_ref().to_string();
-        if !started {
-            if Some(key.as_str()) == last_done.as_deref() {
-                started = true;
-            }
+    for (path, norm_key) in trade_paths {
+        if should_skip_pma_file(&norm_key, last_done.as_deref()) {
             continue;
         }
         let bytes = store.get(&path).await?.bytes().await?;
@@ -513,7 +535,7 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
         checkpoint::save(
             pool,
             PIPELINE_KEY,
-            serde_json::json!({ "last_completed_file": key }),
+            serde_json::json!({ "last_completed_file": norm_key }),
         )
         .await?;
         tracing::info!(key = %path, rows = file_rows, "PMA trades object done");
@@ -530,4 +552,112 @@ fn merge_blocks_parquet_bytes(bytes: &bytes::Bytes, map: &mut HashMap<i64, i64>)
         merge_blocks_batch(&batch, map)?;
     }
     Ok(())
+}
+
+/// `polymarket/trades` 等子路径（可带 `s3_prefix`）。
+pub fn oss_polymarket_path(cfg: &Config, polymarket_suffix: &str) -> String {
+    let prefix = s3_object_prefix(cfg);
+    let suffix = polymarket_suffix.trim_matches('/');
+    if prefix.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{prefix}/{suffix}")
+    }
+}
+
+/// 列出 OSS 下某目录内所有 `.parquet`（`ObjectStore` 路径 + 规范化键），按规范化键排序。
+pub async fn list_oss_parquet_objects_under(
+    cfg: &Config,
+    polymarket_subdir: &str,
+) -> anyhow::Result<Vec<(ObjPath, String)>> {
+    let store = build_object_store(cfg)?;
+    let prefix = oss_polymarket_path(cfg, polymarket_subdir);
+    let mut out = Vec::new();
+    let mut list = store.list(Some(&ObjPath::from(prefix.as_str())));
+    while let Some(res) = list.next().await {
+        let meta = res?;
+        let loc = meta.location.as_ref();
+        if loc.ends_with(".parquet") {
+            let norm = normalize_pma_parquet_relative_key(loc);
+            out.push((meta.location, norm));
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
+}
+
+/// 仅规范化键（用于统计、展示）。
+pub async fn list_oss_parquet_keys_under(cfg: &Config, polymarket_subdir: &str) -> anyhow::Result<Vec<String>> {
+    let v = list_oss_parquet_objects_under(cfg, polymarket_subdir).await?;
+    Ok(v.into_iter().map(|(_, k)| k).collect())
+}
+
+/// PMA 进度 + OSS 上 Parquet 文件计数（用于 `status` / HTTP）。
+pub async fn pipeline_pma_status(pool: &PgPool, cfg: &Config) -> anyhow::Result<serde_json::Value> {
+    let cursor = checkpoint::load(pool, PIPELINE_KEY).await?;
+    let last_done = cursor
+        .as_ref()
+        .and_then(|j| j.get("last_completed_file").and_then(|x| x.as_str()))
+        .map(|s| normalize_pma_parquet_relative_key(s));
+
+    if cfg.s3_bucket.is_none() {
+        return Ok(serde_json::json!({
+            "mode": "no_object_store",
+            "pma_order_filled_checkpoint": cursor,
+            "hint": "配置 PIPELINE_OSS_BUCKET 后可展示 OSS 上 trades/blocks/markets 文件数与待处理 trades 文件数",
+        }));
+    }
+
+    let trade_keys = list_oss_parquet_keys_under(cfg, "polymarket/trades").await.unwrap_or_default();
+    let block_keys = list_oss_parquet_keys_under(cfg, "polymarket/blocks").await.unwrap_or_default();
+    let market_keys = list_oss_parquet_keys_under(cfg, "polymarket/markets").await.unwrap_or_default();
+    let pending: usize = trade_keys
+        .iter()
+        .filter(|k| !should_skip_pma_file(k, last_done.as_deref()))
+        .count();
+
+    Ok(serde_json::json!({
+        "mode": "object_store",
+        "bucket": cfg.s3_bucket,
+        "s3_prefix": cfg.s3_prefix,
+        "oss_trade_parquet_files": trade_keys.len(),
+        "oss_block_parquet_files": block_keys.len(),
+        "oss_markets_parquet_files": market_keys.len(),
+        "trade_files_sample": trade_keys.iter().take(8).collect::<Vec<_>>(),
+        "pma_order_filled": {
+            "last_completed_file": last_done,
+            "pending_trade_files": pending,
+            "checkpoint": cursor,
+        },
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_pma_parquet_relative_key, should_skip_pma_file};
+
+    #[test]
+    fn should_skip_respects_lexicographic_order() {
+        let ld = Some("polymarket/trades/b.parquet");
+        assert!(should_skip_pma_file("polymarket/trades/a.parquet", ld));
+        assert!(should_skip_pma_file("polymarket/trades/b.parquet", ld));
+        assert!(!should_skip_pma_file("polymarket/trades/c.parquet", ld));
+        assert!(!should_skip_pma_file("polymarket/trades/c.parquet", None));
+    }
+
+    #[test]
+    fn normalize_strips_dot_underscore_prefix_on_filename() {
+        assert_eq!(
+            normalize_pma_parquet_relative_key("polymarket/blocks/._blocks_10000000_10100000.parquet"),
+            "polymarket/blocks/blocks_10000000_10100000.parquet"
+        );
+        assert_eq!(
+            normalize_pma_parquet_relative_key("polymarket/trades/._trades_0_10000.parquet"),
+            "polymarket/trades/trades_0_10000.parquet"
+        );
+        assert_eq!(
+            normalize_pma_parquet_relative_key("polymarket/blocks/blocks_1_2.parquet"),
+            "polymarket/blocks/blocks_1_2.parquet"
+        );
+    }
 }

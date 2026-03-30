@@ -1,9 +1,9 @@
-//! CLI: `polymarket-pipeline` — ingest & process (see docs/polymarket-data-platform-unified.md).
+//! CLI: `polymarket-pipeline` — ingest & process (see docs/polymarket-data-foundation-pma-core.md).
 
 use clap::{Parser, Subcommand};
 use polymarket_pipeline::{
     aggregate, bootstrap, config::Config, db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma,
-    process_trades, refresh_wallets, snapshot_wallets,
+    process_trades, refresh_wallets, report, snapshot_wallets,
 };
 use sqlx::PgPool;
 
@@ -41,8 +41,10 @@ enum Command {
     RunAll,
     /// 增量同步：markets → enrich → PMA → process-trades → … → aggregate（**不含** migrate）
     Sync,
-    /// Read-only HTTP (`PIPELINE_HTTP_BIND`): `/health`, `/stats`
+    /// Read-only HTTP (`PIPELINE_HTTP_BIND`): `/health`, `/stats`, `/pipeline-status`
     Serve,
+    /// 打印 OSS PMA 进度 + `etl_checkpoint`（与 `/pipeline-status` 一致）
+    Status,
     /// 下载 `data.tar.zst` 并解压；若已配置 OSS bucket 则上传并删除本地 `polymarket/`
     BootstrapData {
         /// 覆盖默认 `PIPELINE_BOOTSTRAP_DOWNLOAD_URL`
@@ -115,6 +117,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Serve => {
             http_server::run_http(&cfg, pool).await?;
+        }
+        Command::Status => {
+            let v = report::pipeline_report(&pool, &cfg).await?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
         }
         Command::BootstrapData {
             url,

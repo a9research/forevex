@@ -1,14 +1,12 @@
 # polymarket-pipeline
 
-Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见绿场文档 P4）。
+Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见 [`docs/polymarket-data-foundation-pma-core.md`](../docs/polymarket-data-foundation-pma-core.md) §12）。
 
 **文档级目标（① 层 raw）**：以 **[jon-becker/prediction-market-analysis](https://github.com/jon-becker/prediction-market-analysis)（PMA）** 的 **Gamma + 链上 `OrderFilled` Parquet**（OSS 持久化）为 **唯一** raw 来源——**不**再使用 Goldsky / poly_data CSV 等旁路导入。流程：**Gamma / PMA markets** → **类目补全** → **`stg_order_filled`（PMA Parquet）** → **加工 `fact_trades`** → **钱包维表** → **Data API activity（可选）** → **官方 API 快照（可选）** → **聚合表**。
 
 **本仓库实现**：链上成交 raw **仅 PMA Parquet**；**对象存储（阿里云 OSS 等 S3 兼容）为唯一持久 raw**，本地 `polymarket/**` 仅为解压或增量暂存，上传后会删除。
 
-- [`docs/polymarket-data-platform-unified.md`](../docs/polymarket-data-platform-unified.md)
-- [`docs/polymarket-analytics-mvp-data-bus.md`](../docs/polymarket-analytics-mvp-data-bus.md)
-- [`docs/polymarket-pipeline-rust-greenfield-plan.md`](../docs/polymarket-pipeline-rust-greenfield-plan.md)
+- [`docs/polymarket-data-foundation-pma-core.md`](../docs/polymarket-data-foundation-pma-core.md)（数据规格唯一来源）
 
 ## 依赖
 
@@ -31,6 +29,7 @@ Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见绿场文档
 | `PIPELINE_BOOTSTRAP_DOWNLOAD_URL` | `bootstrap-data` 的 `data.tar.zst` 地址，默认 `https://s3.jbecker.dev/data.tar.zst` |
 | `PIPELINE_OSS_*` / `PIPELINE_S3_*` | 见 `.env.example`：bucket、endpoint、AccessKey；配置后 **`ingest-pma` / `sync` 先上传本地 parquet 再删盘，再从 OSS 入库** |
 | `PIPELINE_MARKETS_BATCH_SIZE` | 默认 `500` |
+| `PIPELINE_DIM_MARKETS_SOURCE` | `gamma`（仅 Gamma HTTP）\|`pma_parquet`（仅 OSS `polymarket/markets/*.parquet`）\|`auto`（默认：OSS 上存在 markets Parquet 则走 PMA，否则 Gamma） |
 | `PIPELINE_HTTP_TIMEOUT_SEC` | 默认 `120` |
 | `PIPELINE_RATE_LIMIT_MS` | Gamma enrich / snapshot / activity 间隔（毫秒），默认 `120` |
 | `PIPELINE_ACTIVITY_PROXIES` | 逗号分隔 `0x…`，`ingest-activities` 拉 `/activity` |
@@ -100,7 +99,8 @@ docker compose stop postgres
 
 ```bash
 cargo run -- migrate
-cargo run -- ingest-markets    # dim_markets，checkpoint: ingest_markets.offset
+cargo run -- ingest-markets    # dim_markets（auto：OSS 有 markets Parquet 则增量文件级 checkpoint `ingest_markets_pma`；否则 Gamma offset `ingest_markets`）
+cargo run -- status             # JSON：OSS 上 trades/blocks/markets 文件数、pma 待处理 trades 文件数、全部 etl_checkpoint
 cargo run -- enrich-gamma       # category_raw / topic_primary
 cargo run -- ingest-pma         # stg_order_filled（OSS 为 raw；本地 parquet 会先上传再删）
 cargo run -- bootstrap-data      # 下载并解压；若已配 OSS bucket 则上传并删除本地 polymarket/
@@ -111,7 +111,7 @@ cargo run -- snapshot-wallets   # wallet_api_snapshot
 cargo run -- aggregate          # agg_wallet_topic + agg_global_daily
 cargo run -- sync               # 增量拉取 + 加工 + 聚合（与 run-all 同顺序，但不含 migrate）
 cargo run -- run-all            # migrate + 与 sync 相同步骤（不含 serve）
-cargo run -- serve              # GET /health、GET /stats（需 DB）
+cargo run -- serve              # GET /health、GET /stats、GET /pipeline-status（与 `status` 子命令同源）
 ```
 
 ### `run-all` vs `sync`

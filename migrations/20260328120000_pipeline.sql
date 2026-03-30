@@ -1,4 +1,4 @@
--- Polymarket pipeline schema (see docs/polymarket-data-platform-unified.md)
+-- Polymarket pipeline schema (see docs/polymarket-data-foundation-pma-core.md)
 
 CREATE TABLE IF NOT EXISTS dim_markets (
     market_id TEXT PRIMARY KEY,

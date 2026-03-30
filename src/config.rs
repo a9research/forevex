@@ -1,6 +1,17 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// `dim_markets` 数据来源（规格 §4：主路径为 PMA `markets` Parquet；Gamma HTTP 为旁路）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimMarketsSource {
+    /// `GET /markets` 分页（poly_data 风格）
+    GammaHttp,
+    /// OSS `polymarket/markets/*.parquet`（须配置 bucket）
+    PmaParquetOss,
+    /// 若 OSS 上存在 `polymarket/markets/*.parquet` 则用 Parquet，否则 Gamma HTTP
+    Auto,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -42,6 +53,9 @@ pub struct Config {
     pub s3_secret_access_key: Option<String>,
     /// 虚拟主机样式（如 `https://bucket.oss-cn-hangzhou.aliyuncs.com`）。阿里云部分场景需 `true`。
     pub s3_virtual_hosted: bool,
+
+    /// `ingest-markets`：`gamma` | `pma_parquet` | `auto`（默认 `auto`）。
+    pub dim_markets_source: DimMarketsSource,
 }
 
 impl Config {
@@ -146,6 +160,10 @@ impl Config {
                 .or_else(|| std::env::var("PIPELINE_S3_VIRTUAL_HOSTED").ok()),
         );
 
+        let dim_markets_source = parse_dim_markets_source(
+            std::env::var("PIPELINE_DIM_MARKETS_SOURCE").unwrap_or_else(|_| "auto".to_string()),
+        )?;
+
         Ok(Self {
             database_url,
             db_max_connections,
@@ -172,7 +190,19 @@ impl Config {
             s3_access_key_id,
             s3_secret_access_key,
             s3_virtual_hosted,
+            dim_markets_source,
         })
+    }
+}
+
+fn parse_dim_markets_source(s: String) -> anyhow::Result<DimMarketsSource> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "gamma" | "gamma_http" | "http" => Ok(DimMarketsSource::GammaHttp),
+        "pma_parquet" | "parquet" | "oss" | "markets_parquet" => Ok(DimMarketsSource::PmaParquetOss),
+        "auto" => Ok(DimMarketsSource::Auto),
+        _ => anyhow::bail!(
+            "PIPELINE_DIM_MARKETS_SOURCE: expected gamma | pma_parquet | auto, got {s:?}"
+        ),
     }
 }
 
