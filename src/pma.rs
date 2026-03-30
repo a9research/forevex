@@ -755,7 +755,7 @@ pub async fn delete_apple_double_parquet_oss(
     let mut targets: Vec<ObjPath> = Vec::new();
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    const LOG_EVERY: u64 = 2000;
+    const LOG_EVERY: u64 = 500;
     let mut cancelled = false;
     for subdir in PMA_OSS_SUBDIRS {
         let prefix = oss_polymarket_path(cfg, subdir);
@@ -812,6 +812,7 @@ pub async fn delete_apple_double_parquet_oss(
 
     let mut deleted = 0usize;
     let total = paths.len();
+    tracing::info!(total, "oss-apple-double: starting deletion");
     for (idx, loc) in targets.into_iter().enumerate() {
         tokio::select! {
             _ = &mut ctrl_c => {
