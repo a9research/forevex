@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::pma;
 use chrono::{TimeZone, Utc};
 use arrow_array::Array;
+use indicatif::{ProgressBar, ProgressStyle};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -29,6 +30,14 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
 
     let store = pma::build_object_store(cfg)?;
 
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}")
+            .unwrap()
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(250));
+
+    pb.set_message("process-trades-pma: loading dim_markets token map");
     let market_rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT market_id, token1, token2 FROM dim_markets WHERE token1 <> '' AND token2 <> ''",
     )
@@ -40,17 +49,42 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         asset_to_market.insert(t2, (market_id, "token2".to_string()));
     }
 
+    pb.set_message("process-trades-pma: listing blocks parquet on OSS");
     let block_objs =
         pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/blocks").await?;
+    pb.finish_and_clear();
+
+    let total_block_files = block_objs.len();
+    let pb_blocks = ProgressBar::new(total_block_files as u64);
+    pb_blocks.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} blocks {msg}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
     let mut block_map: HashMap<i64, i64> = HashMap::new();
     for (path, _) in block_objs {
+        pb_blocks.set_message(path.to_string());
         let bytes = store.get(&path).await?.bytes().await?;
         merge_blocks_parquet_bytes(&bytes, &mut block_map)?;
+        pb_blocks.inc(1);
     }
+    pb_blocks.finish_with_message(format!(
+        "loaded {} block timestamps ({} files)",
+        block_map.len(),
+        total_block_files
+    ));
     tracing::info!(blocks = block_map.len(), "process-trades-pma: loaded block timestamps from object store");
 
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}")
+            .unwrap()
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(250));
+    pb.set_message("process-trades-pma: listing trades parquet on OSS");
     let trade_objs =
         pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/trades").await?;
+    pb.finish_and_clear();
     let cursor = checkpoint::load(pool, PIPELINE_KEY).await?;
     let last_done = cursor
         .as_ref()
@@ -58,15 +92,23 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         .map(|s| pma::normalize_pma_parquet_relative_key(s));
 
     let total_files = trade_objs.len();
+    let pb_trades = ProgressBar::new(total_files as u64);
+    pb_trades.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} trades_files {msg}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
     let mut processed_files = 0usize;
     let mut inserted_total = 0usize;
 
     for (obj_path, norm_key) in trade_objs {
         if pma::should_skip_pma_file(&norm_key, last_done.as_deref()) {
+            pb_trades.inc(1);
             continue;
         }
 
         processed_files += 1;
+        pb_trades.set_message(obj_path.to_string());
         let bytes = store.get(&obj_path).await?.bytes().await?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
         let mut file_rows = 0usize;
@@ -91,8 +133,10 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
             total_files,
             "process-trades-pma: trades file done"
         );
+        pb_trades.inc(1);
     }
 
+    pb_trades.finish_with_message(format!("inserted_total={}", inserted_total));
     tracing::info!(inserted_total, "process-trades-pma finished");
     Ok(inserted_total)
 }

@@ -1,6 +1,7 @@
 //! CLI: `polymarket-pipeline` — ingest & process (see docs/polymarket-data-foundation-pma-core.md).
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use polymarket_pipeline::{
     aggregate, bootstrap, config::{Config, TradesProcessor}, db, enrich_gamma, http_server, ingest_activities,
     ingest_markets, pma, process_trades, process_trades_pma, refresh_wallets, report, snapshot_wallets,
@@ -189,24 +190,63 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
+    let mut total_steps = 1 /* markets */ + 1 /* enrich */ + 1 /* trades */ + 1 /* wallets */ + 1 /* activities */ + 1 /* snapshots */ + 1 /* aggregate */;
+    if matches!(cfg.trades_processor, TradesProcessor::PgStg) {
+        total_steps += 1; // ingest-pma + process-trades are separate concerns
+    }
+
+    let pb = ProgressBar::new(total_steps);
+    pb.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+
+    pb.set_message("ingest-markets");
     ingest_markets::run(pool, cfg).await?;
+    pb.inc(1);
+
     if cfg.skip_enrich_gamma {
+        pb.set_message("enrich-gamma (skipped)");
         tracing::warn!("sync/run-all: PIPELINE_SKIP_ENRICH_GAMMA=1 — skipping enrich-gamma");
     } else {
+        pb.set_message("enrich-gamma");
         enrich_gamma::run(pool, cfg).await?;
     }
+    pb.inc(1);
+
     match cfg.trades_processor {
         TradesProcessor::PgStg => {
+            pb.set_message("ingest-pma (PG stg)");
             pma::run(pool, cfg).await?;
+            pb.inc(1);
+            pb.set_message("process-trades (PG stg -> fact)");
             process_trades::run(pool, cfg).await?;
+            pb.inc(1);
         }
         TradesProcessor::PmaOssDirect => {
+            pb.set_message("process-trades-pma (OSS -> fact)");
             process_trades_pma::run(pool, cfg).await?;
+            pb.inc(1);
         }
     }
+
+    pb.set_message("refresh-wallets");
     refresh_wallets::run(pool).await?;
+    pb.inc(1);
+
+    pb.set_message("ingest-activities");
     ingest_activities::run(pool, cfg).await?;
+    pb.inc(1);
+
+    pb.set_message("snapshot-wallets");
     snapshot_wallets::run(pool, cfg).await?;
+    pb.inc(1);
+
+    pb.set_message("aggregate");
     aggregate::run(pool).await?;
+    pb.inc(1);
+
+    pb.finish_with_message("pipeline completed");
     Ok(())
 }
