@@ -190,7 +190,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
     ingest_markets::run(pool, cfg).await?;
-    enrich_gamma::run(pool, cfg).await?;
+    if cfg.skip_enrich_gamma {
+        tracing::warn!("sync/run-all: PIPELINE_SKIP_ENRICH_GAMMA=1 — skipping enrich-gamma");
+    } else {
+        enrich_gamma::run(pool, cfg).await?;
+    }
     match cfg.trades_processor {
         TradesProcessor::PgStg => {
             pma::run(pool, cfg).await?;

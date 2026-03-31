@@ -30,6 +30,7 @@ Rust 数据管线（**仅 Postgres**；Parquet 导出未实现，见 [`docs/poly
 | `PIPELINE_OSS_*` / `PIPELINE_S3_*` | 见 `.env.example`：bucket、endpoint、AccessKey；配置后 **`ingest-pma` / `sync` 先上传本地 parquet 再删盘，再从 OSS 入库** |
 | `PIPELINE_MARKETS_BATCH_SIZE` | 默认 `500` |
 | `PIPELINE_DIM_MARKETS_SOURCE` | `gamma`（仅 Gamma HTTP）\|`pma_parquet`（仅 OSS `polymarket/markets/*.parquet`）\|`auto`（默认：OSS 上存在 markets Parquet 则走 PMA，否则 Gamma） |
+| `PIPELINE_SKIP_ENRICH_GAMMA` | `1` 时跳过 `enrich-gamma`（不逐条调 Gamma `/markets/{id}` 补 `category_raw/topic_primary`）；默认 `0` |
 | `PIPELINE_HTTP_TIMEOUT_SEC` | 默认 `120` |
 | `PIPELINE_RATE_LIMIT_MS` | Gamma enrich / snapshot / activity 间隔（毫秒），默认 `120` |
 | `PIPELINE_ACTIVITY_PROXIES` | 逗号分隔 `0x…`，`ingest-activities` 拉 `/activity` |
@@ -151,6 +152,11 @@ PIPELINE_DIM_MARKETS_SOURCE=auto
 PIPELINE_TRADES_PROCESSOR=pma_oss
 # pma_oss: OSS PMA Parquet → PG fact_trades（跳过 PG stg_order_filled）
 # pg_stg : OSS PMA Parquet → PG stg_order_filled → PG fact_trades（旧路径，耗磁盘）
+```
+
+5) （可选）跳过 enrich-gamma（当你不关心 `category_raw/topic_primary` 或 Gamma 太慢/限流时）：
+```text
+PIPELINE_SKIP_ENRICH_GAMMA=1
 ```
 
 ### 2. （可选）清理 OSS 上 macOS `._*.parquet` 旁路文件

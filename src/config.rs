@@ -68,6 +68,9 @@ pub struct Config {
 
     /// Trades processor: `pma_oss`（默认）| `pg_stg`。
     pub trades_processor: TradesProcessor,
+
+    /// Skip `enrich-gamma` step in `sync/run-all` (useful when Gamma is slow/limited).
+    pub skip_enrich_gamma: bool,
 }
 
 impl Config {
@@ -180,6 +183,8 @@ impl Config {
             std::env::var("PIPELINE_TRADES_PROCESSOR").unwrap_or_else(|_| "pma_oss".to_string()),
         )?;
 
+        let skip_enrich_gamma = env_truthy(std::env::var("PIPELINE_SKIP_ENRICH_GAMMA").ok());
+
         Ok(Self {
             database_url,
             db_max_connections,
@@ -208,6 +213,7 @@ impl Config {
             s3_virtual_hosted,
             dim_markets_source,
             trades_processor,
+            skip_enrich_gamma,
         })
     }
 }
