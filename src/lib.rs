@@ -10,6 +10,7 @@ pub mod ingest_markets;
 pub mod ingest_markets_parquet;
 pub mod pma;
 pub mod process_trades;
+pub mod process_trades_pma;
 pub mod report;
 pub mod refresh_wallets;
 pub mod snapshot_wallets;

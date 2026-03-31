@@ -54,7 +54,7 @@ async fn stats(State(st): State<Arc<AppState>>) -> Result<Json<Value>, StatusCod
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let stg: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM stg_order_filled")
+    let _stg: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM stg_order_filled")
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -74,13 +74,22 @@ async fn stats(State(st): State<Arc<AppState>>) -> Result<Json<Value>, StatusCod
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _stg: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM stg_order_filled")
+        .fetch_one(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let checkpoints: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM etl_checkpoint")
+        .fetch_one(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(json!({
         "dim_markets": dim_markets,
-        "stg_order_filled": stg,
         "fact_trades": trades,
         "dim_wallets": wallets,
         "fact_account_activities": activities,
         "wallet_api_snapshot": snapshots,
+        "stg_order_filled": _stg,
+        "etl_checkpoint": checkpoints,
     })))
 }

@@ -2,8 +2,8 @@
 
 use clap::{Parser, Subcommand};
 use polymarket_pipeline::{
-    aggregate, bootstrap, config::Config, db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma,
-    process_trades, refresh_wallets, report, snapshot_wallets,
+    aggregate, bootstrap, config::{Config, TradesProcessor}, db, enrich_gamma, http_server, ingest_activities,
+    ingest_markets, pma, process_trades, process_trades_pma, refresh_wallets, report, snapshot_wallets,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -46,6 +46,8 @@ enum Command {
     Serve,
     /// 打印 OSS PMA 进度 + `etl_checkpoint`（与 `/pipeline-status` 一致）
     Status,
+    /// 清空 `stg_order_filled` 以释放磁盘（仅在确认已改为 OSS 直读或已完成下游后使用）
+    CleanupStg,
     /// 报告 OSS 上 `._*.parquet`（macOS AppleDouble）是否与真实 Parquet 成对；`--delete` 删除这些旁路文件
     OssAppleDouble {
         /// 删除所有匹配的 `._*.parquet`（建议先不加本参数看 JSON 报告）
@@ -153,6 +155,16 @@ async fn main() -> anyhow::Result<()> {
             let v = report::pipeline_report(&pool, &cfg).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
+        Command::CleanupStg => {
+            let before: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM stg_order_filled")
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(0);
+            sqlx::query("TRUNCATE stg_order_filled")
+                .execute(&pool)
+                .await?;
+            tracing::info!(before, "cleanup-stg: stg_order_filled truncated");
+        }
         Command::BootstrapData {
             url,
             force,
@@ -179,8 +191,15 @@ async fn main() -> anyhow::Result<()> {
 async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
     ingest_markets::run(pool, cfg).await?;
     enrich_gamma::run(pool, cfg).await?;
-    pma::run(pool, cfg).await?;
-    process_trades::run(pool, cfg).await?;
+    match cfg.trades_processor {
+        TradesProcessor::PgStg => {
+            pma::run(pool, cfg).await?;
+            process_trades::run(pool, cfg).await?;
+        }
+        TradesProcessor::PmaOssDirect => {
+            process_trades_pma::run(pool, cfg).await?;
+        }
+    }
     refresh_wallets::run(pool).await?;
     ingest_activities::run(pool, cfg).await?;
     snapshot_wallets::run(pool, cfg).await?;

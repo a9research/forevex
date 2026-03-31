@@ -12,6 +12,15 @@ pub enum DimMarketsSource {
     Auto,
 }
 
+/// Trades processing pipeline strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradesProcessor {
+    /// Legacy: PMA Parquet → PG `stg_order_filled` → PG `fact_trades`.
+    PgStg,
+    /// Preferred: OSS PMA Parquet → PG `fact_trades` directly (skip PG staging).
+    PmaOssDirect,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -56,6 +65,9 @@ pub struct Config {
 
     /// `ingest-markets`：`gamma` | `pma_parquet` | `auto`（默认 `auto`）。
     pub dim_markets_source: DimMarketsSource,
+
+    /// Trades processor: `pma_oss`（默认）| `pg_stg`。
+    pub trades_processor: TradesProcessor,
 }
 
 impl Config {
@@ -164,6 +176,10 @@ impl Config {
             std::env::var("PIPELINE_DIM_MARKETS_SOURCE").unwrap_or_else(|_| "auto".to_string()),
         )?;
 
+        let trades_processor = parse_trades_processor(
+            std::env::var("PIPELINE_TRADES_PROCESSOR").unwrap_or_else(|_| "pma_oss".to_string()),
+        )?;
+
         Ok(Self {
             database_url,
             db_max_connections,
@@ -191,6 +207,7 @@ impl Config {
             s3_secret_access_key,
             s3_virtual_hosted,
             dim_markets_source,
+            trades_processor,
         })
     }
 }
@@ -202,6 +219,16 @@ fn parse_dim_markets_source(s: String) -> anyhow::Result<DimMarketsSource> {
         "auto" => Ok(DimMarketsSource::Auto),
         _ => anyhow::bail!(
             "PIPELINE_DIM_MARKETS_SOURCE: expected gamma | pma_parquet | auto, got {s:?}"
+        ),
+    }
+}
+
+fn parse_trades_processor(s: String) -> anyhow::Result<TradesProcessor> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "pma_oss" | "pma" | "oss" | "direct" => Ok(TradesProcessor::PmaOssDirect),
+        "pg_stg" | "stg" | "postgres" => Ok(TradesProcessor::PgStg),
+        _ => anyhow::bail!(
+            "PIPELINE_TRADES_PROCESSOR: expected pma_oss | pg_stg, got {s:?}"
         ),
     }
 }

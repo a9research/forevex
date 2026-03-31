@@ -114,6 +114,7 @@ cargo run -- aggregate          # agg_wallet_topic + agg_global_daily
 cargo run -- sync               # 增量拉取 + 加工 + 聚合（与 run-all 同顺序，但不含 migrate）
 cargo run -- run-all            # migrate + 与 sync 相同步骤（不含 serve）
 cargo run -- serve              # GET /health、GET /stats、GET /pipeline-status（与 `status` 子命令同源）
+cargo run -- cleanup-stg        # TRUNCATE stg_order_filled（释放磁盘；确认已切到 OSS 直读或下游已完成后再用）
 ```
 
 ## 完整执行步骤（从初始化到增量）
@@ -145,6 +146,13 @@ PIPELINE_DIM_MARKETS_SOURCE=auto
 # auto: 若 OSS 存在 polymarket/markets/*.parquet（忽略 ._ 旁路），则用 OSS；否则用 Gamma HTTP
 ```
 
+4) 选择 trades 处理策略（默认推荐 `pma_oss`，可显著降低 PG 磁盘占用）：
+```text
+PIPELINE_TRADES_PROCESSOR=pma_oss
+# pma_oss: OSS PMA Parquet → PG fact_trades（跳过 PG stg_order_filled）
+# pg_stg : OSS PMA Parquet → PG stg_order_filled → PG fact_trades（旧路径，耗磁盘）
+```
+
 ### 2. （可选）清理 OSS 上 macOS `._*.parquet` 旁路文件
 
 先报告（建议你确认已完全成对后再删）：
@@ -168,10 +176,24 @@ cargo run -- run-all
 
 首次执行会写入：
 - `dim_markets`（由 `ingest-markets` 写入：OSS Parquet 或 Gamma HTTP）
-- `stg_order_filled`（由 `ingest-pma` 写入：只从 OSS `polymarket/trades|blocks` 读）
+- `stg_order_filled`（仅在 `PIPELINE_TRADES_PROCESSOR=pg_stg` 时写入；`pma_oss` 默认不写）
 - `fact_trades` / `dim_wallets` / `fact_account_activities`（按配置可有/可空）
 - `wallet_api_snapshot` / `agg_*`
 - `etl_checkpoint`（用于后续 `sync` 的增量续跑）
+
+### 6. 释放磁盘（仅当需要）
+
+当你已确认 `fact_trades` 从 OSS 正常生成、且不再需要 PG staging 时，可以清空 `stg_order_filled`：
+
+```bash
+cargo run -- cleanup-stg
+```
+
+验证（应为 0）：
+
+```bash
+psql \"postgres://postgres:postgres@127.0.0.1:5433/polymarket_pipeline\" -c \"SELECT COUNT(*) FROM stg_order_filled;\"
+```
 
 ### 4. 判断你这台机器上 `ingest-markets` 会走 OSS 还是 Gamma（可直接照抄）
 
