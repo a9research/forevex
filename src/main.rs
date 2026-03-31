@@ -5,8 +5,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use polymarket_pipeline::{
     aggregate, bootstrap,
     config::{Config, TradesProcessor},
-    db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma, pma_indexer,
-    process_trades, process_trades_pma, refresh_wallets, report, snapshot_wallets,
+    db, enrich_gamma, fact_trades_oss, http_server, ingest_activities, ingest_markets, pma,
+    pma_indexer, process_trades, refresh_wallets, report, snapshot_wallets,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
             process_trades::run(&pool, &cfg).await?;
         }
         Command::RefreshWallets => {
-            refresh_wallets::run(&pool).await?;
+            refresh_wallets::run(&pool, &cfg).await?;
         }
         Command::IngestActivities => {
             ingest_activities::run(&pool, &cfg).await?;
@@ -185,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
             snapshot_wallets::run(&pool, &cfg).await?;
         }
         Command::Aggregate => {
-            aggregate::run(&pool).await?;
+            aggregate::run(&pool, &cfg).await?;
         }
         Command::RunAll => {
             sqlx::migrate!("./migrations").run(&pool).await?;
@@ -278,14 +278,14 @@ async fn run_pipeline_steps(
             pb.inc(1);
         }
         TradesProcessor::PmaOssDirect => {
-            pb.set_message("process-trades-pma (OSS -> fact)");
-            process_trades_pma::run(pool, cfg).await?;
+            pb.set_message("fact-trades-oss (OSS trades -> OSS fact_trades parquet)");
+            fact_trades_oss::run(pool, cfg).await?;
             pb.inc(1);
         }
     }
 
     pb.set_message("refresh-wallets");
-    refresh_wallets::run(pool).await?;
+    refresh_wallets::run(pool, cfg).await?;
     pb.inc(1);
 
     pb.set_message("ingest-activities");
@@ -297,7 +297,7 @@ async fn run_pipeline_steps(
     pb.inc(1);
 
     pb.set_message("aggregate");
-    aggregate::run(pool).await?;
+    aggregate::run(pool, cfg).await?;
     pb.inc(1);
 
     pb.finish_with_message("pipeline completed");

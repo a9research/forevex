@@ -13,10 +13,13 @@ pub async fn pipeline_report(pool: &PgPool, cfg: &Config) -> anyhow::Result<Valu
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    let fact_rows: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM fact_trades")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    let oss_fact_keys = if cfg.s3_bucket.is_some() {
+        pma::list_oss_parquet_keys_under(cfg, "polymarket/fact_trades")
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let etl: Vec<Value> = checkpoints
         .into_iter()
         .map(|(p, j, t)| {
@@ -31,7 +34,8 @@ pub async fn pipeline_report(pool: &PgPool, cfg: &Config) -> anyhow::Result<Valu
         "pma": pma,
         "tables": {
             "stg_order_filled": stg_rows,
-            "fact_trades": fact_rows
+            "fact_trades": "moved_to_oss",
+            "oss_fact_trades_parquet_files": oss_fact_keys.len()
         },
         "etl_checkpoints": etl,
     }))

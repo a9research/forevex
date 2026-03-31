@@ -72,6 +72,11 @@ pub struct Config {
     /// Skip `enrich-gamma` step in `sync/run-all` (useful when Gamma is slow/limited).
     pub skip_enrich_gamma: bool,
 
+    /// enrich-gamma: max markets per run (sync/run-all step).
+    pub enrich_gamma_batch_size: u32,
+    /// enrich-gamma: base backoff seconds after a failure (doubles per attempt).
+    pub enrich_gamma_fail_backoff_sec: u64,
+
     /// Polygon JSON-RPC endpoints (comma-separated). Used by PMA-aligned indexer (OSS Parquet writer).
     pub polygon_rpc_urls: Vec<String>,
     /// Max retry attempts per RPC request (with backoff + endpoint rotation).
@@ -204,6 +209,18 @@ impl Config {
 
         let skip_enrich_gamma = env_truthy(std::env::var("PIPELINE_SKIP_ENRICH_GAMMA").ok());
 
+        let enrich_gamma_batch_size: u32 = std::env::var("PIPELINE_ENRICH_GAMMA_BATCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1_000)
+            .clamp(1, 200_000);
+        let enrich_gamma_fail_backoff_sec: u64 =
+            std::env::var("PIPELINE_ENRICH_GAMMA_FAIL_BACKOFF_SEC")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300)
+                .clamp(1, 86_400);
+
         let polygon_rpc_urls = parse_csv_list(
             std::env::var("PIPELINE_POLYGON_RPC_URLS")
                 .or_else(|_| std::env::var("PIPELINE_POLYGON_RPC_URL").map(|s| s))
@@ -276,6 +293,8 @@ impl Config {
             dim_markets_source,
             trades_processor,
             skip_enrich_gamma,
+            enrich_gamma_batch_size,
+            enrich_gamma_fail_backoff_sec,
 
             polygon_rpc_urls,
             polygon_rpc_max_retries,

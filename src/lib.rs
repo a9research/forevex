@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod config;
 pub mod db;
 pub mod enrich_gamma;
+pub mod fact_trades_oss;
 pub mod http_server;
 pub mod ingest_activities;
 pub mod ingest_markets;

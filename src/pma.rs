@@ -288,7 +288,7 @@ fn merge_blocks_batch(batch: &RecordBatch, map: &mut HashMap<i64, i64>) -> anyho
     Ok(())
 }
 
-fn parse_ts_iso_to_unix(ts: &str) -> Option<i64> {
+pub fn parse_ts_iso_to_unix(ts: &str) -> Option<i64> {
     let t = ts.trim();
     if t.is_empty() {
         return None;

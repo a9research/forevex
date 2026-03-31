@@ -1,4 +1,7 @@
-//! Process OSS PMA Parquet directly into `fact_trades` (skip PG `stg_order_filled`).
+//! Process OSS PMA Parquet directly into PG `fact_trades` (skip PG `stg_order_filled`).
+//!
+//! NOTE: This path is retained for reference/back-compat, but the disk-constrained default
+//! is now to write `fact_trades` to OSS Parquet (see `fact_trades_oss`).
 //!
 //! Inputs:
 //! - OSS `polymarket/blocks/*.parquet` for `block_number -> unix_seconds`
