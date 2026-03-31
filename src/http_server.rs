@@ -3,11 +3,7 @@
 use crate::config::Config;
 use crate::report;
 use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    serve as axum_serve,
+    extract::State, http::StatusCode, response::IntoResponse, routing::get, serve as axum_serve,
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -66,10 +62,11 @@ async fn stats(State(st): State<Arc<AppState>>) -> Result<Json<Value>, StatusCod
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let activities: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM fact_account_activities")
-        .fetch_one(pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let activities: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM fact_account_activities")
+            .fetch_one(pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let snapshots: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM wallet_api_snapshot")
         .fetch_one(pool)
         .await

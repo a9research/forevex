@@ -7,9 +7,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
-    let client = Client::builder()
-        .timeout(cfg.http_timeout)
-        .build()?;
+    let client = Client::builder().timeout(cfg.http_timeout).build()?;
 
     let ids: Vec<String> = sqlx::query_scalar(
         r#"
@@ -23,7 +21,11 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
 
     let mut n = 0usize;
     for market_id in ids {
-        let url = format!("{}/markets/{}", cfg.gamma_origin, urlencoding::encode(&market_id));
+        let url = format!(
+            "{}/markets/{}",
+            cfg.gamma_origin,
+            urlencoding::encode(&market_id)
+        );
         let resp = client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             tokio::time::sleep(std::time::Duration::from_millis(cfg.rate_limit_ms)).await;

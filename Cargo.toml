@@ -47,3 +47,5 @@ tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
 url = "2"
 indicatif = "0.17"
+hex = "0.4"
+ethabi = "18"

@@ -223,8 +223,7 @@ pub async fn sync_local_polymarket_to_oss_and_delete(cfg: &Config) -> anyhow::Re
     let poly_tree = base.join("polymarket");
     if poly_tree.exists() {
         let p = poly_tree.clone();
-        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&p))
-            .await??;
+        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&p)).await??;
     }
 
     Ok(paths.len() as u64)
@@ -241,7 +240,11 @@ fn load_block_timestamps_local(base: &Path) -> anyhow::Result<HashMap<i64, i64>>
         );
         return Ok(map);
     }
-    for entry in WalkDir::new(&dir).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let p = entry.path();
         if p.is_file()
             && p.extension().map(|x| x == "parquet").unwrap_or(false)
@@ -254,7 +257,10 @@ fn load_block_timestamps_local(base: &Path) -> anyhow::Result<HashMap<i64, i64>>
             merge_blocks_parquet_file(p, &mut map)?;
         }
     }
-    tracing::info!(blocks = map.len(), "loaded block timestamps from local PMA blocks");
+    tracing::info!(
+        blocks = map.len(),
+        "loaded block timestamps from local PMA blocks"
+    );
     Ok(map)
 }
 
@@ -545,7 +551,10 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
         let bytes = store.get(&path).await?.bytes().await?;
         merge_blocks_parquet_bytes(&bytes, &mut block_map)?;
     }
-    tracing::info!(blocks = block_map.len(), "loaded block timestamps from object store");
+    tracing::info!(
+        blocks = block_map.len(),
+        "loaded block timestamps from object store"
+    );
 
     let trade_paths =
         list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/trades").await?;
@@ -582,7 +591,10 @@ async fn ingest_from_object_store(pool: &PgPool, cfg: &Config) -> anyhow::Result
     Ok(total)
 }
 
-fn merge_blocks_parquet_bytes(bytes: &bytes::Bytes, map: &mut HashMap<i64, i64>) -> anyhow::Result<()> {
+fn merge_blocks_parquet_bytes(
+    bytes: &bytes::Bytes,
+    map: &mut HashMap<i64, i64>,
+) -> anyhow::Result<()> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(bytes.clone())?.build()?;
     for batch in reader {
         let batch = batch?;
@@ -601,7 +613,10 @@ pub async fn list_oss_parquet_objects_under(
 }
 
 /// 仅规范化键（用于统计、展示）。
-pub async fn list_oss_parquet_keys_under(cfg: &Config, polymarket_subdir: &str) -> anyhow::Result<Vec<String>> {
+pub async fn list_oss_parquet_keys_under(
+    cfg: &Config,
+    polymarket_subdir: &str,
+) -> anyhow::Result<Vec<String>> {
     let v = list_oss_parquet_objects_under(cfg, polymarket_subdir).await?;
     Ok(v.into_iter().map(|(_, k)| k).collect())
 }
@@ -622,11 +637,18 @@ pub async fn pipeline_pma_status(pool: &PgPool, cfg: &Config) -> anyhow::Result<
         }));
     }
 
-    let trade_keys = list_oss_parquet_keys_under(cfg, "polymarket/trades").await.unwrap_or_default();
-    let block_keys = list_oss_parquet_keys_under(cfg, "polymarket/blocks").await.unwrap_or_default();
-    let market_keys = list_oss_parquet_keys_under(cfg, "polymarket/markets").await.unwrap_or_default();
-    let legacy_trade_keys =
-        list_oss_parquet_keys_under(cfg, "polymarket/legacy_trades").await.unwrap_or_default();
+    let trade_keys = list_oss_parquet_keys_under(cfg, "polymarket/trades")
+        .await
+        .unwrap_or_default();
+    let block_keys = list_oss_parquet_keys_under(cfg, "polymarket/blocks")
+        .await
+        .unwrap_or_default();
+    let market_keys = list_oss_parquet_keys_under(cfg, "polymarket/markets")
+        .await
+        .unwrap_or_default();
+    let legacy_trade_keys = list_oss_parquet_keys_under(cfg, "polymarket/legacy_trades")
+        .await
+        .unwrap_or_default();
     let pending: usize = trade_keys
         .iter()
         .filter(|k| !should_skip_pma_file(k, last_done.as_deref()))
@@ -841,7 +863,10 @@ pub async fn delete_apple_double_parquet_oss(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_apple_double_parquet_object_key, normalize_pma_parquet_relative_key, should_skip_pma_file};
+    use super::{
+        is_apple_double_parquet_object_key, normalize_pma_parquet_relative_key,
+        should_skip_pma_file,
+    };
 
     #[test]
     fn should_skip_respects_lexicographic_order() {
@@ -865,7 +890,9 @@ mod tests {
     #[test]
     fn normalize_strips_dot_underscore_prefix_on_filename() {
         assert_eq!(
-            normalize_pma_parquet_relative_key("polymarket/blocks/._blocks_10000000_10100000.parquet"),
+            normalize_pma_parquet_relative_key(
+                "polymarket/blocks/._blocks_10000000_10100000.parquet"
+            ),
             "polymarket/blocks/blocks_10000000_10100000.parquet"
         );
         assert_eq!(

@@ -71,11 +71,31 @@ pub struct Config {
 
     /// Skip `enrich-gamma` step in `sync/run-all` (useful when Gamma is slow/limited).
     pub skip_enrich_gamma: bool,
+
+    /// Polygon JSON-RPC endpoints (comma-separated). Used by PMA-aligned indexer (OSS Parquet writer).
+    pub polygon_rpc_urls: Vec<String>,
+    /// Max retry attempts per RPC request (with backoff + endpoint rotation).
+    pub polygon_rpc_max_retries: u32,
+    /// Base backoff in milliseconds for RPC retries.
+    pub polygon_rpc_backoff_ms: u64,
+
+    /// Optional: contract address to filter `eth_getLogs` for OrderFilled-like events.
+    /// If empty, indexer will fail when running trades sync.
+    pub polymarket_exchange_addresses: Vec<String>,
+    /// Optional: topic0 for OrderFilled event (0x... 32-byte hash).
+    pub polymarket_order_filled_topic0: Option<String>,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let _ = dotenvy::dotenv();
+
+        // Defaults extracted from prediction-market-analysis (PMA) `src/indexers/polymarket/blockchain.py`.
+        const PMA_CTF_EXCHANGE: &str = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+        const PMA_NEGRISK_CTF_EXCHANGE: &str = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+        const PMA_ORDER_FILLED_TOPIC0: &str =
+            "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6";
+
         let database_url = std::env::var("DATABASE_URL")
             .or_else(|_| std::env::var("PIPELINE_DATABASE_URL"))
             .map_err(|_| anyhow::anyhow!("DATABASE_URL or PIPELINE_DATABASE_URL required"))?;
@@ -110,12 +130,10 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(120);
 
-        let activity_proxies = parse_csv_list(
-            std::env::var("PIPELINE_ACTIVITY_PROXIES").unwrap_or_default(),
-        );
-        let snapshot_proxies = parse_csv_list(
-            std::env::var("PIPELINE_SNAPSHOT_PROXIES").unwrap_or_default(),
-        );
+        let activity_proxies =
+            parse_csv_list(std::env::var("PIPELINE_ACTIVITY_PROXIES").unwrap_or_default());
+        let snapshot_proxies =
+            parse_csv_list(std::env::var("PIPELINE_SNAPSHOT_PROXIES").unwrap_or_default());
         let snapshot_max_wallets: usize = std::env::var("PIPELINE_SNAPSHOT_MAX_WALLETS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -130,7 +148,8 @@ impl Config {
         let gamma_profile_path = std::env::var("PIPELINE_GAMMA_PUBLIC_PROFILE_URL")
             .unwrap_or_else(|_| "https://gamma-api.polymarket.com/public-profile".to_string());
 
-        let http_bind = std::env::var("PIPELINE_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        let http_bind =
+            std::env::var("PIPELINE_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
 
         let pma_data_dir = std::env::var("PIPELINE_PMA_DATA_DIR")
             .map(PathBuf::from)
@@ -185,6 +204,49 @@ impl Config {
 
         let skip_enrich_gamma = env_truthy(std::env::var("PIPELINE_SKIP_ENRICH_GAMMA").ok());
 
+        let polygon_rpc_urls = parse_csv_list(
+            std::env::var("PIPELINE_POLYGON_RPC_URLS")
+                .or_else(|_| std::env::var("PIPELINE_POLYGON_RPC_URL").map(|s| s))
+                .or_else(|_| std::env::var("POLYGON_RPC_URLS").map(|s| s))
+                .or_else(|_| std::env::var("POLYGON_RPC_URL").map(|s| s))
+                .unwrap_or_default(),
+        );
+        let polygon_rpc_max_retries: u32 = std::env::var("PIPELINE_POLYGON_RPC_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8)
+            .clamp(0, 100);
+        let polygon_rpc_backoff_ms: u64 = std::env::var("PIPELINE_POLYGON_RPC_BACKOFF_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(250)
+            .clamp(0, 60_000);
+
+        let polymarket_exchange_addresses = {
+            let s = std::env::var("PIPELINE_POLYMARKET_EXCHANGE_ADDRESS")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_POLYMARKET_EXCHANGE_ADDRESSES").ok())
+                .or_else(|| std::env::var("PIPELINE_PM_EXCHANGE_ADDRESS").ok())
+                .or_else(|| std::env::var("PIPELINE_PM_EXCHANGE_ADDRESSES").ok())
+                .unwrap_or_default();
+            let v = parse_csv_list(s);
+            if v.is_empty() {
+                vec![
+                    PMA_CTF_EXCHANGE.to_string(),
+                    PMA_NEGRISK_CTF_EXCHANGE.to_string(),
+                ]
+            } else {
+                v
+            }
+        };
+        let polymarket_order_filled_topic0 = nonempty_opt(
+            std::env::var("PIPELINE_POLYMARKET_ORDER_FILLED_TOPIC0")
+                .ok()
+                .or_else(|| std::env::var("PIPELINE_PM_ORDER_FILLED_TOPIC0").ok()),
+        );
+        let polymarket_order_filled_topic0 =
+            polymarket_order_filled_topic0.or_else(|| Some(PMA_ORDER_FILLED_TOPIC0.to_string()));
+
         Ok(Self {
             database_url,
             db_max_connections,
@@ -214,6 +276,12 @@ impl Config {
             dim_markets_source,
             trades_processor,
             skip_enrich_gamma,
+
+            polygon_rpc_urls,
+            polygon_rpc_max_retries,
+            polygon_rpc_backoff_ms,
+            polymarket_exchange_addresses,
+            polymarket_order_filled_topic0,
         })
     }
 }
@@ -221,7 +289,9 @@ impl Config {
 fn parse_dim_markets_source(s: String) -> anyhow::Result<DimMarketsSource> {
     match s.trim().to_ascii_lowercase().as_str() {
         "gamma" | "gamma_http" | "http" => Ok(DimMarketsSource::GammaHttp),
-        "pma_parquet" | "parquet" | "oss" | "markets_parquet" => Ok(DimMarketsSource::PmaParquetOss),
+        "pma_parquet" | "parquet" | "oss" | "markets_parquet" => {
+            Ok(DimMarketsSource::PmaParquetOss)
+        }
         "auto" => Ok(DimMarketsSource::Auto),
         _ => anyhow::bail!(
             "PIPELINE_DIM_MARKETS_SOURCE: expected gamma | pma_parquet | auto, got {s:?}"
@@ -233,9 +303,7 @@ fn parse_trades_processor(s: String) -> anyhow::Result<TradesProcessor> {
     match s.trim().to_ascii_lowercase().as_str() {
         "pma_oss" | "pma" | "oss" | "direct" => Ok(TradesProcessor::PmaOssDirect),
         "pg_stg" | "stg" | "postgres" => Ok(TradesProcessor::PgStg),
-        _ => anyhow::bail!(
-            "PIPELINE_TRADES_PROCESSOR: expected pma_oss | pg_stg, got {s:?}"
-        ),
+        _ => anyhow::bail!("PIPELINE_TRADES_PROCESSOR: expected pma_oss | pg_stg, got {s:?}"),
     }
 }
 

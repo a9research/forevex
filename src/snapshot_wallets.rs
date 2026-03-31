@@ -6,9 +6,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
-    let client = Client::builder()
-        .timeout(cfg.http_timeout)
-        .build()?;
+    let client = Client::builder().timeout(cfg.http_timeout).build()?;
 
     let proxies: Vec<String> = if !cfg.snapshot_proxies.is_empty() {
         cfg.snapshot_proxies.clone()
@@ -42,21 +40,13 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
             continue;
         }
 
-        let stats_url = format!(
-            "{}?proxyAddress={}",
-            stats_base,
-            urlencoding::encode(&addr)
-        );
+        let stats_url = format!("{}?proxyAddress={}", stats_base, urlencoding::encode(&addr));
         let pnl_url = format!(
             "{}?user_address={}&interval=all&fidelity=12h",
             pnl_base,
             urlencoding::encode(&addr)
         );
-        let profile_url = format!(
-            "{}?address={}",
-            profile_base,
-            urlencoding::encode(&addr)
-        );
+        let profile_url = format!("{}?address={}", profile_base, urlencoding::encode(&addr));
 
         let user_stats_json = fetch_json_opt(&client, &stats_url).await;
         let user_pnl_json = fetch_json_opt(&client, &pnl_url).await;

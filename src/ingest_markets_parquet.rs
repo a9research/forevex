@@ -66,8 +66,8 @@ fn batch_row_to_gamma_json(batch: &RecordBatch, row: usize) -> Option<Value> {
         return None;
     }
 
-    let condition_id = col_str_any(batch, row, &["conditionId", "condition_id"])
-        .unwrap_or_default();
+    let condition_id =
+        col_str_any(batch, row, &["conditionId", "condition_id"]).unwrap_or_default();
     let slug = col_str_any(batch, row, &["slug", "market_slug"]).unwrap_or_default();
     let question = col_str_any(batch, row, &["question", "title"]).unwrap_or_default();
 
@@ -85,8 +85,8 @@ fn batch_row_to_gamma_json(batch: &RecordBatch, row: usize) -> Option<Value> {
         .map(|v| json!(v))
         .unwrap_or_else(|| json!([]));
 
-    let neg_risk = col_bool_any(batch, row, &["negRiskAugmented", "neg_risk", "negRisk"])
-        .unwrap_or(false);
+    let neg_risk =
+        col_bool_any(batch, row, &["negRiskAugmented", "neg_risk", "negRisk"]).unwrap_or(false);
 
     let volume = col_str_any(batch, row, &["volume"]);
     let vol_val = volume.as_ref().and_then(|s| s.parse::<f64>().ok());
@@ -108,7 +108,8 @@ fn batch_row_to_gamma_json(batch: &RecordBatch, row: usize) -> Option<Value> {
     }
     if let Some(s) = closed_time {
         if !s.is_empty() {
-            m.as_object_mut()?.insert("closedTime".to_string(), json!(s));
+            m.as_object_mut()?
+                .insert("closedTime".to_string(), json!(s));
         }
     }
     if let Some(s) = created_at {

@@ -11,8 +11,8 @@
 use crate::checkpoint;
 use crate::config::Config;
 use crate::pma;
-use chrono::{TimeZone, Utc};
 use arrow_array::Array;
+use chrono::{TimeZone, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
@@ -25,16 +25,15 @@ const SCALE: i64 = 1_000_000;
 
 pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
     if cfg.s3_bucket.is_none() {
-        anyhow::bail!("process-trades-pma requires object storage (PIPELINE_OSS_BUCKET / PIPELINE_S3_BUCKET)");
+        anyhow::bail!(
+            "process-trades-pma requires object storage (PIPELINE_OSS_BUCKET / PIPELINE_S3_BUCKET)"
+        );
     }
 
     let store = pma::build_object_store(cfg)?;
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}")
-            .unwrap()
-    );
+    pb.set_style(ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}").unwrap());
     pb.enable_steady_tick(std::time::Duration::from_millis(250));
 
     pb.set_message("process-trades-pma: loading dim_markets token map");
@@ -51,15 +50,18 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
 
     pb.set_message("process-trades-pma: listing blocks parquet on OSS");
     let block_objs =
-        pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/blocks").await?;
+        pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/blocks")
+            .await?;
     pb.finish_and_clear();
 
     let total_block_files = block_objs.len();
     let pb_blocks = ProgressBar::new(total_block_files as u64);
     pb_blocks.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} blocks {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} blocks {msg}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
     );
     let mut block_map: HashMap<i64, i64> = HashMap::new();
     for (path, _) in block_objs {
@@ -73,17 +75,18 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         block_map.len(),
         total_block_files
     ));
-    tracing::info!(blocks = block_map.len(), "process-trades-pma: loaded block timestamps from object store");
+    tracing::info!(
+        blocks = block_map.len(),
+        "process-trades-pma: loaded block timestamps from object store"
+    );
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}")
-            .unwrap()
-    );
+    pb.set_style(ProgressStyle::with_template("[{elapsed_precise}] {spinner} {msg}").unwrap());
     pb.enable_steady_tick(std::time::Duration::from_millis(250));
     pb.set_message("process-trades-pma: listing trades parquet on OSS");
     let trade_objs =
-        pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/trades").await?;
+        pma::list_oss_parquet_objects_under_with_store(store.clone(), cfg, "polymarket/trades")
+            .await?;
     pb.finish_and_clear();
     let cursor = checkpoint::load(pool, PIPELINE_KEY).await?;
     let last_done = cursor
@@ -94,9 +97,11 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
     let total_files = trade_objs.len();
     let pb_trades = ProgressBar::new(total_files as u64);
     pb_trades.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} trades_files {msg}")
-            .unwrap()
-            .progress_chars("=>-"),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} trades_files {msg}",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
     );
     let mut processed_files = 0usize;
     let mut inserted_total = 0usize;
@@ -114,7 +119,8 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         let mut file_rows = 0usize;
         for batch in reader {
             let batch = batch?;
-            file_rows += ingest_trade_batch_to_fact(pool, &batch, &block_map, &asset_to_market).await?;
+            file_rows +=
+                ingest_trade_batch_to_fact(pool, &batch, &block_map, &asset_to_market).await?;
         }
 
         inserted_total += file_rows;
@@ -142,7 +148,9 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
 }
 
 fn parse_amount_scaled(s: &str) -> Option<Decimal> {
-    Decimal::from_str(s.trim()).ok().map(|d| d / Decimal::from(SCALE))
+    Decimal::from_str(s.trim())
+        .ok()
+        .map(|d| d / Decimal::from(SCALE))
 }
 
 async fn ingest_trade_batch_to_fact(
@@ -182,17 +190,37 @@ async fn ingest_trade_batch_to_fact(
             None => continue,
         };
 
-        let nonusdc_asset_id = if maker_asset != "0" { &maker_asset } else { &taker_asset };
+        let nonusdc_asset_id = if maker_asset != "0" {
+            &maker_asset
+        } else {
+            &taker_asset
+        };
         let (market_id, side) = match asset_to_market.get(nonusdc_asset_id) {
             Some(v) => v.clone(),
             None => continue,
         };
 
-        let maker_asset_side = if maker_asset == "0" { "USDC".to_string() } else { side.clone() };
-        let taker_asset_side = if taker_asset == "0" { "USDC".to_string() } else { side.clone() };
+        let maker_asset_side = if maker_asset == "0" {
+            "USDC".to_string()
+        } else {
+            side.clone()
+        };
+        let taker_asset_side = if taker_asset == "0" {
+            "USDC".to_string()
+        } else {
+            side.clone()
+        };
 
-        let taker_direction = if taker_asset_side == "USDC" { "BUY" } else { "SELL" };
-        let maker_direction = if taker_asset_side == "USDC" { "SELL" } else { "BUY" };
+        let taker_direction = if taker_asset_side == "USDC" {
+            "BUY"
+        } else {
+            "SELL"
+        };
+        let maker_direction = if taker_asset_side == "USDC" {
+            "SELL"
+        } else {
+            "BUY"
+        };
 
         let nonusdc_side = if maker_asset_side != "USDC" {
             maker_asset_side.clone()
@@ -252,7 +280,10 @@ async fn ingest_trade_batch_to_fact(
     Ok(inserted)
 }
 
-fn merge_blocks_parquet_bytes(bytes: &bytes::Bytes, map: &mut HashMap<i64, i64>) -> anyhow::Result<()> {
+fn merge_blocks_parquet_bytes(
+    bytes: &bytes::Bytes,
+    map: &mut HashMap<i64, i64>,
+) -> anyhow::Result<()> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(bytes.clone())?.build()?;
     for batch in reader {
         let batch = batch?;
@@ -261,7 +292,10 @@ fn merge_blocks_parquet_bytes(bytes: &bytes::Bytes, map: &mut HashMap<i64, i64>)
     Ok(())
 }
 
-fn merge_blocks_batch(batch: &arrow_array::RecordBatch, map: &mut HashMap<i64, i64>) -> anyhow::Result<()> {
+fn merge_blocks_batch(
+    batch: &arrow_array::RecordBatch,
+    map: &mut HashMap<i64, i64>,
+) -> anyhow::Result<()> {
     let n = batch.num_rows();
     for i in 0..n {
         let bn = col_i64(batch, "block_number", i);
@@ -359,4 +393,3 @@ fn col_amount_str(batch: &arrow_array::RecordBatch, name: &str, row: usize) -> S
     }
     "0".to_string()
 }
-

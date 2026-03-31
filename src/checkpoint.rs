@@ -33,9 +33,7 @@ pub async fn save_ts_only(pool: &PgPool, pipeline: &str, last_ts: i64) -> anyhow
 }
 
 /// All pipeline checkpoints (for `/pipeline-status` / `status` CLI).
-pub async fn list_all(
-    pool: &PgPool,
-) -> anyhow::Result<Vec<(String, Value, DateTime<Utc>)>> {
+pub async fn list_all(pool: &PgPool) -> anyhow::Result<Vec<(String, Value, DateTime<Utc>)>> {
     let rows: Vec<(String, Value, DateTime<Utc>)> = sqlx::query_as(
         "SELECT pipeline, cursor_json, updated_at FROM etl_checkpoint ORDER BY pipeline",
     )

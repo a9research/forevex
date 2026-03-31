@@ -32,7 +32,10 @@ pub async fn run(cfg: &Config, opts: BootstrapOptions) -> anyhow::Result<()> {
         );
         if should_upload {
             let n = sync_local_polymarket_to_oss_and_delete(cfg).await?;
-            tracing::info!(uploaded = n, "bootstrap: synced local parquet to OSS and removed disk copy");
+            tracing::info!(
+                uploaded = n,
+                "bootstrap: synced local parquet to OSS and removed disk copy"
+            );
         }
         return Ok(());
     }

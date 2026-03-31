@@ -13,9 +13,7 @@ pub async fn run(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
         return Ok(0);
     }
 
-    let client = Client::builder()
-        .timeout(cfg.http_timeout)
-        .build()?;
+    let client = Client::builder().timeout(cfg.http_timeout).build()?;
 
     let mut n = 0usize;
     for proxy in &cfg.activity_proxies {

@@ -4,7 +4,13 @@ pub fn normalize_key(s: &str) -> String {
     s.trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_whitespace() || c == '_' { '-' } else { c })
+        .map(|c| {
+            if c.is_whitespace() || c == '_' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -67,7 +73,12 @@ fn rollup_normalized(n: &str) -> Option<String> {
 }
 
 fn is_sports_cluster(n: &str) -> bool {
-    n == "sports" || n == "sport" || n == "soccer" || n.contains("nba") || n.contains("nfl") || n.contains("ncaa")
+    n == "sports"
+        || n == "sport"
+        || n == "soccer"
+        || n.contains("nba")
+        || n.contains("nfl")
+        || n.contains("ncaa")
 }
 
 fn is_iran_cluster(n: &str) -> bool {
@@ -171,7 +182,10 @@ mod tests {
 
     #[test]
     fn us_current_affairs_to_politics() {
-        assert_eq!(rollup_category_to_topic(Some("US-current-affairs")), "politics");
+        assert_eq!(
+            rollup_category_to_topic(Some("US-current-affairs")),
+            "politics"
+        );
     }
 
     #[test]

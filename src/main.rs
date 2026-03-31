@@ -3,8 +3,10 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use polymarket_pipeline::{
-    aggregate, bootstrap, config::{Config, TradesProcessor}, db, enrich_gamma, http_server, ingest_activities,
-    ingest_markets, pma, process_trades, process_trades_pma, refresh_wallets, report, snapshot_wallets,
+    aggregate, bootstrap,
+    config::{Config, TradesProcessor},
+    db, enrich_gamma, http_server, ingest_activities, ingest_markets, pma, pma_indexer,
+    process_trades, process_trades_pma, refresh_wallets, report, snapshot_wallets,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -67,6 +69,28 @@ enum Command {
         #[arg(long)]
         no_upload: bool,
     },
+
+    /// PMA 对齐 indexer：从 Polygon RPC 增量写 OSS Parquet（blocks/trades）并把游标文件写到 OSS
+    IndexerOss {
+        /// 只同步 blocks（写 `polymarket/blocks/*.parquet` + `polymarket/.backfill_block_cursor`）
+        #[arg(long)]
+        blocks: bool,
+        /// 只同步 trades（写 `polymarket/trades/*.parquet` + `polymarket/.backfill_offset`）
+        #[arg(long)]
+        trades: bool,
+        /// 覆盖 cursor：从指定 block 开始（含）
+        #[arg(long)]
+        from_block: Option<u64>,
+        /// 覆盖 cursor：同步到指定 block（含）；默认到链上 head
+        #[arg(long)]
+        to_block: Option<u64>,
+        /// 每次 `eth_getLogs` / blocks chunk 的 block 范围（默认 10000）
+        #[arg(long, default_value_t = 10_000)]
+        chunk_blocks: u64,
+        /// blocks 采样步长（默认 1000；写入采样点用于后续插值）
+        #[arg(long, default_value_t = 1_000)]
+        blocks_sample_stride: u64,
+    },
 }
 
 #[tokio::main]
@@ -99,6 +123,29 @@ async fn main() -> anyhow::Result<()> {
                 let v = pma::report_apple_double_parquet_oss(&cfg).await?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
             }
+            return Ok(());
+        }
+        Command::IndexerOss {
+            blocks,
+            trades,
+            from_block,
+            to_block,
+            chunk_blocks,
+            blocks_sample_stride,
+        } => {
+            let v = pma_indexer::run_indexer_oss(
+                &cfg,
+                pma_indexer::IndexerOptions {
+                    blocks: if !blocks && !trades { true } else { *blocks },
+                    trades: if !blocks && !trades { true } else { *trades },
+                    from_block: *from_block,
+                    to_block: *to_block,
+                    chunk_blocks: *chunk_blocks,
+                    blocks_sample_stride: *blocks_sample_stride,
+                },
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
             return Ok(());
         }
         _ => {}
@@ -184,12 +231,18 @@ async fn main() -> anyhow::Result<()> {
         Command::OssAppleDouble { .. } => {
             unreachable!("oss-apple-double handled before DB connect");
         }
+        Command::IndexerOss { .. } => {
+            unreachable!("indexer-oss handled before DB connect");
+        }
     }
 
     Ok(())
 }
 
-async fn run_pipeline_steps(pool: &PgPool, cfg: &polymarket_pipeline::config::Config) -> anyhow::Result<()> {
+async fn run_pipeline_steps(
+    pool: &PgPool,
+    cfg: &polymarket_pipeline::config::Config,
+) -> anyhow::Result<()> {
     let mut total_steps = 1 /* markets */ + 1 /* enrich */ + 1 /* trades */ + 1 /* wallets */ + 1 /* activities */ + 1 /* snapshots */ + 1 /* aggregate */;
     if matches!(cfg.trades_processor, TradesProcessor::PgStg) {
         total_steps += 1; // ingest-pma + process-trades are separate concerns

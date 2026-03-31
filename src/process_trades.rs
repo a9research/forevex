@@ -12,9 +12,7 @@ const PIPELINE_KEY: &str = "process_trades";
 const SCALE: i64 = 1_000_000;
 
 pub async fn run(pool: &PgPool, _cfg: &Config) -> anyhow::Result<usize> {
-    let last_id: i64 = load_checkpoint(pool)
-        .await?
-        .unwrap_or(0);
+    let last_id: i64 = load_checkpoint(pool).await?.unwrap_or(0);
 
     let market_rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT market_id, token1, token2 FROM dim_markets WHERE token1 <> '' AND token2 <> ''",
@@ -140,16 +138,8 @@ fn process_one(r: &StgRow, asset_to_market: &HashMap<String, (String, String)>) 
     let ma = parse_amount(&r.maker_amount_filled).ok()? / Decimal::from(SCALE);
     let ta = parse_amount(&r.taker_amount_filled).ok()? / Decimal::from(SCALE);
 
-    let taker_direction = if taker_asset == "USDC" {
-        "BUY"
-    } else {
-        "SELL"
-    };
-    let maker_direction = if taker_asset == "USDC" {
-        "SELL"
-    } else {
-        "BUY"
-    };
+    let taker_direction = if taker_asset == "USDC" { "BUY" } else { "SELL" };
+    let maker_direction = if taker_asset == "USDC" { "SELL" } else { "BUY" };
 
     let nonusdc_side = if maker_asset != "USDC" {
         maker_asset.clone()

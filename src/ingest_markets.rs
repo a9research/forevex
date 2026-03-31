@@ -57,9 +57,7 @@ async fn resolve_dim_markets_source(cfg: &Config) -> anyhow::Result<DimMarketsSo
 }
 
 async fn run_gamma_http(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
-    let client = Client::builder()
-        .timeout(cfg.http_timeout)
-        .build()?;
+    let client = Client::builder().timeout(cfg.http_timeout).build()?;
 
     let mut current_offset: u32 = checkpoint::load(pool, PIPELINE_KEY)
         .await?
@@ -82,7 +80,11 @@ async fn run_gamma_http(pool: &PgPool, cfg: &Config) -> anyhow::Result<usize> {
             continue;
         }
         if !resp.status().is_success() {
-            anyhow::bail!("markets HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+            anyhow::bail!(
+                "markets HTTP {}: {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
         }
         let markets: Vec<Value> = resp.json().await?;
         if markets.is_empty() {
