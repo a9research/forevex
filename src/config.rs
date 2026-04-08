@@ -221,13 +221,20 @@ impl Config {
                 .unwrap_or(300)
                 .clamp(1, 86_400);
 
-        let polygon_rpc_urls = parse_csv_list(
+        let mut polygon_rpc_urls = parse_csv_list(
             std::env::var("PIPELINE_POLYGON_RPC_URLS")
                 .or_else(|_| std::env::var("PIPELINE_POLYGON_RPC_URL").map(|s| s))
                 .or_else(|_| std::env::var("POLYGON_RPC_URLS").map(|s| s))
                 .or_else(|_| std::env::var("POLYGON_RPC_URL").map(|s| s))
                 .unwrap_or_default(),
         );
+        // 与 `.env.example` 建议一致；未配置时让 `indexer-oss` 可直接跑通。公共节点易限流，生产请自备 RPC。
+        if polygon_rpc_urls.is_empty() {
+            polygon_rpc_urls = vec![
+                "https://polygon-rpc.com".to_string(),
+                "https://rpc.ankr.com/polygon".to_string(),
+            ];
+        }
         let polygon_rpc_max_retries: u32 = std::env::var("PIPELINE_POLYGON_RPC_MAX_RETRIES")
             .ok()
             .and_then(|s| s.parse().ok())
